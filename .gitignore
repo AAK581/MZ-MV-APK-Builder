@@ -1,0 +1,8 @@
+# Per-game build workspaces (huge: node_modules, gradle outputs, game copies)
+projects/
+
+# Built APKs
+output/
+
+# Local GUI preference
+gui-settings.json
