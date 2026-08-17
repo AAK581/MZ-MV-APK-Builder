@@ -629,8 +629,8 @@ $chkFrame = New-Control "CheckBox" 14 92 70 22 "Frame" $gbLook
 $chkFrame.Checked = $true
 $null = New-Control "Label" 86 95 40 18 "Color" $gbLook
 $txtFrCol = New-Control "TextBox" 126 92 60 22 "#bababa" $gbLook
-$btnFrCol = New-Control "Button" 190 91 36 24 "pick" $gbLook
-$null = New-Control "Label" 236 95 40 18 "Op. %" $gbLook
+$btnFrCol = New-Control "Button" 190 91 42 24 "pick" $gbLook
+$null = New-Control "Label" 238 95 38 18 "Op. %" $gbLook
 $numFrOp = New-Control "NumericUpDown" 278 92 44 22 "" $gbLook
 $numFrOp.Minimum = 0; $numFrOp.Maximum = 100; $numFrOp.Value = 50
 $null = New-Control "Label" 332 95 34 18 "Side" $gbLook
