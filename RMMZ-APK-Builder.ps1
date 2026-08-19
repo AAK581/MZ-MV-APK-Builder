@@ -1134,7 +1134,11 @@ $btnHelp.Add_Click({
         "Android refuses unsigned apps, so a private signing key is created once in Documents\android-keys and reused for all your games. BACK THAT FOLDER UP - updates must be signed with the same key. No Google account is involved. These APKs are for itch.io and sideloading; publishing on Google Play would need a different pipeline (AAB, store listing, etc.).",
         "",
         "REQUIREMENTS",
-        "Node.js (checked at startup). Everything else (JDK, Android SDK, Gradle) is downloaded automatically on the first build."
+        "Node.js (checked at startup). Everything else (JDK, Android SDK, Gradle) is downloaded automatically on the first build.",
+        "",
+        "CREDITS",
+        "Made by Doma - https://linktr.ee/aak581",
+        "Special thanks to AbraGeroni - https://linktr.ee/AbraGeroni - for testing the builder and finding the bugs that made it work on other people's machines."
     )
 
     $dark = $chkDark.Checked

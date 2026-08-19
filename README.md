@@ -83,3 +83,10 @@ the export's own `icon/icon.png`). Use `-NoFrame` to disable the frame.
 | `templates/` | the files generated into every game (controls JS, MainActivity) |
 | `README.txt` | plain-text instructions shipped alongside the tool |
 | `projects/`, `output/` | created at runtime; per-game workspaces and built APKs (git-ignored) |
+
+## Credits
+
+Made by [Doma](https://linktr.ee/aak581).
+
+Special thanks to [AbraGeroni](https://linktr.ee/AbraGeroni) for testing the
+builder and finding the bugs that made it work on machines other than mine.
