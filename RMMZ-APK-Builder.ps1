@@ -43,10 +43,38 @@ try {
 
 $ToolDir     = $PSScriptRoot
 $TemplateDir = Join-Path $ToolDir "templates"
-$ProjectsDir = Join-Path $ToolDir "projects"
-$KeysDir     = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "android-keys"
-$SdkDir      = "$env:LOCALAPPDATA\Android\Sdk"
 $GuiSettings = Join-Path $ToolDir "gui-settings.json"
+
+# --- working locations, with a guard for non-ASCII user names -------------
+# The Java/Android toolchain misbehaves when paths contain non-ASCII
+# characters (e.g. a Cyrillic Windows user name), and Windows points %TEMP%
+# at an 8.3 short path like C:\Users\7636~1\... for such profiles, which may
+# not resolve at all. When the profile or tool path is not plain ASCII,
+# everything the build needs lives under an ASCII-only folder in the shared
+# Public profile instead.
+function Test-AsciiPath([string]$p) {
+    return ($null -ne $p) -and ($p -notmatch "[^\x20-\x7E]")
+}
+
+$AsciiPaths = (Test-AsciiPath $env:USERPROFILE) -and (Test-AsciiPath $ToolDir)
+if ($AsciiPaths) {
+    $ProjectsDir = Join-Path $ToolDir "projects"
+    $KeysDir     = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "android-keys"
+    $SdkDir      = "$env:LOCALAPPDATA\Android\Sdk"
+    $JdkRoot     = "$env:USERPROFILE\.jdks"
+    $DataRoot    = $null
+} else {
+    $DataRoot    = Join-Path $env:PUBLIC "RMMZ-APK-Builder"
+    $ProjectsDir = Join-Path $DataRoot "projects"
+    $KeysDir     = Join-Path $DataRoot "android-keys"
+    $SdkDir      = Join-Path $DataRoot "Sdk"
+    $JdkRoot     = Join-Path $DataRoot "jdk"
+    # Keep Gradle's cache off the non-ASCII profile path too.
+    $env:GRADLE_USER_HOME = Join-Path $DataRoot "gradle"
+}
+# Downloads always go somewhere we control, never %TEMP%.
+$DownloadDir = Join-Path $SdkDir "downloads"
+
 if (-not $OutputDir) { $OutputDir = Join-Path $ToolDir "output" }
 
 $script:LogBox = $null
@@ -150,17 +178,17 @@ function Ensure-Node {
 }
 
 function Ensure-Jdk {
-    $jdksRoot = "$env:USERPROFILE\.jdks"
-    $jdk = Get-ChildItem $jdksRoot -Directory -Filter "jdk-21*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $jdk = Get-ChildItem $JdkRoot -Directory -Filter "jdk-21*" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($jdk) { return $jdk.FullName }
     Write-Log "== Downloading Temurin JDK 21 (one-time, ~190 MB)"
-    New-Item -ItemType Directory -Force $jdksRoot | Out-Null
-    $zip = Join-Path $env:TEMP "jdk21.zip"
+    New-Item -ItemType Directory -Force $JdkRoot | Out-Null
+    New-Item -ItemType Directory -Force $DownloadDir | Out-Null
+    $zip = Join-Path $DownloadDir "jdk21.zip"
     $ProgressPreference = "SilentlyContinue"
     Invoke-WebRequest -Uri "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse" -OutFile $zip
-    Expand-Archive $zip -DestinationPath $jdksRoot -Force
+    Expand-Archive $zip -DestinationPath $JdkRoot -Force
     Remove-Item $zip -Force
-    $jdk = Get-ChildItem $jdksRoot -Directory -Filter "jdk-21*" | Select-Object -First 1
+    $jdk = Get-ChildItem $JdkRoot -Directory -Filter "jdk-21*" | Select-Object -First 1
     if (-not $jdk) { throw "JDK download/extract failed" }
     return $jdk.FullName
 }
@@ -171,7 +199,8 @@ function Ensure-Sdk([string]$jdkPath) {
     $env:JAVA_HOME = $jdkPath
     $ProgressPreference = "SilentlyContinue"
     if (-not (Test-Path "$SdkDir\cmdline-tools\latest\bin\sdkmanager.bat")) {
-        $cliZip = Join-Path $env:TEMP "cmdtools.zip"
+        New-Item -ItemType Directory -Force $DownloadDir | Out-Null
+        $cliZip = Join-Path $DownloadDir "cmdtools.zip"
         Invoke-WebRequest -Uri "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip" -OutFile $cliZip
         Expand-Archive $cliZip -DestinationPath "$SdkDir\cmdline-tools\tmp" -Force
         Move-Item "$SdkDir\cmdline-tools\tmp\cmdline-tools" "$SdkDir\cmdline-tools\latest"
@@ -1051,4 +1080,7 @@ Apply-Theme $darkPref
 
 Write-Log "Ready. Pick your game export folder, icon and colors - the preview updates live. Then BUILD APK."
 Write-Log "Signing key: $KeysDir (created automatically; back it up). APKs are for itch.io/sideloading, not the Play Store."
+if (-not $AsciiPaths) {
+    Write-Log "Note: your Windows user name contains non-English characters, which the Android build tools cannot handle. Build files, tools and the signing key are kept in $DataRoot instead."
+}
 [void]$form.ShowDialog()
