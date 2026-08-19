@@ -274,6 +274,51 @@ function Ensure-Jdk {
     return $jdk.FullName
 }
 
+# sdkmanager prompts for license acceptance on stdin. Piping into it from a
+# GUI process (which has no console stdin) leaves it blocked forever at 0% CPU,
+# so run it as a child process with a file of "y" answers as stdin, follow its
+# log for progress, and give up if it produces nothing for a long stretch.
+function Invoke-Sdkmanager([string]$sdkman, [string[]]$sdkArgs, [string]$label, [bool]$ignoreExit = $false) {
+    New-Item -ItemType Directory -Force $DownloadDir | Out-Null
+    $log = Join-Path $DownloadDir "sdkmanager.log"
+    $errLog = Join-Path $DownloadDir "sdkmanager.err"
+    $answers = Join-Path $DownloadDir "accept.txt"
+    Remove-Item $log, $errLog -Force -ErrorAction SilentlyContinue
+    Set-Content -Path $answers -Value ((1..80 | ForEach-Object { "y" }) -join "`r`n") -Encoding ascii
+
+    $p = Start-Process -FilePath $sdkman -ArgumentList $sdkArgs -NoNewWindow -PassThru `
+            -RedirectStandardInput $answers -RedirectStandardOutput $log -RedirectStandardError $errLog
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastLen = -1
+    $lastChange = 0.0
+    while (-not $p.HasExited) {
+        Start-Sleep -Milliseconds 400
+        $len = -1
+        try { $len = (Get-Item $log -ErrorAction Stop).Length } catch { }
+        if ($len -ne $lastLen) { $lastLen = $len; $lastChange = $sw.Elapsed.TotalSeconds }
+        $pct = -1
+        try {
+            $tail = [string](Get-Content $log -Tail 1 -ErrorAction Stop)
+            if ($tail -match "(\d{1,3})%(?!.*\d{1,3}%)") { $pct = [int]$matches[1] }
+        } catch { }
+        if ($pct -ge 0) { Set-Progress -text $label -percent $pct } else { Set-Progress -text $label }
+        if (($sw.Elapsed.TotalSeconds - $lastChange) -gt 480) {
+            try { $p.Kill() } catch { }
+            throw "$label stopped responding (no progress for 8 minutes). Check your internet connection, and if you run antivirus like 360 Total Security, allow this folder or turn it off and retry."
+        }
+    }
+    # Start-Process -PassThru does not always populate ExitCode until the
+    # object is waited on, and it can stay $null; treat unknown as success and
+    # let the caller's own outcome check decide.
+    $code = $null
+    try { $p.WaitForExit(); $code = [int]$p.ExitCode } catch { }
+    if ((-not $ignoreExit) -and ($null -ne $code) -and ($code -ne 0)) {
+        $detail = ""
+        try { $detail = ((Get-Content $errLog -Tail 4 -ErrorAction Stop) -join " ").Trim() } catch { }
+        throw "$label failed (exit code $code). $detail"
+    }
+}
+
 function Ensure-Sdk([string]$jdkPath) {
     if (Test-Path "$SdkDir\platforms\android-36") { return }
     Write-Log "== Installing Android SDK (one-time, ~700 MB)"
@@ -288,21 +333,10 @@ function Ensure-Sdk([string]$jdkPath) {
         Remove-Item $cliZip -Force
     }
     $sdkman = "$SdkDir\cmdline-tools\latest\bin\sdkmanager.bat"
-    Set-Progress -text "Accepting Android SDK licenses"
-    $yes = @("y") * 40
-    $yes | & $sdkman --licenses | Out-Null
+    Write-Log "   accepting SDK licenses"
+    Invoke-Sdkmanager $sdkman @("--licenses") "Accepting Android SDK licenses" $true
     Write-Log "   downloading SDK packages - this is the slow part (a few minutes)"
-    Set-Progress -text "Installing Android SDK packages (~700 MB)"
-    & $sdkman "platform-tools" "platforms;android-36" "build-tools;36.0.0" 2>&1 | ForEach-Object {
-        # sdkmanager reports with carriage returns, so keep this to pumping the
-        # UI and surfacing the occasional milestone rather than the raw bar.
-        $line = ([string]$_)
-        if ($line -match "(Installing|Unzipping|Preparing|Downloading)\s+([^\s].{0,50})") {
-            Set-Progress -text ("Android SDK: " + $matches[1] + " " + $matches[2].Trim())
-        } else {
-            Set-Progress
-        }
-    }
+    Invoke-Sdkmanager $sdkman @("platform-tools", "platforms;android-36", "build-tools;36.0.0") "Installing Android SDK packages (~700 MB)"
     if (-not (Test-Path "$SdkDir\platforms\android-36")) { throw "Android SDK install failed" }
 }
 
