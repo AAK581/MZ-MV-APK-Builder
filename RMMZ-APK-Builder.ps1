@@ -16,7 +16,7 @@
 param(
     [switch]$NoGui,
     [string]$GameDir = "",
-    [string]$DevName = "doma581",
+    [string]$DevName = "",
     [string]$GameTitle = "",
     [string]$VersionName = "1.0",
     [string]$IconPath = "",
@@ -224,9 +224,11 @@ function Ensure-Keystore {
     }
     Write-Log "== Generating signing keystore (one-time; BACK UP $KeysDir)"
     $pw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+    $dn = Sanitize-Name $DevName
+    if (-not $dn) { $dn = "unknown" }
     $keytool = Join-Path (Ensure-Jdk) "bin\keytool.exe"
     & $keytool -genkeypair -v -keystore $jks -alias upload -keyalg RSA -keysize 2048 -validity 10000 `
-        -storepass $pw -keypass $pw -dname "CN=$DevName, O=$DevName" | Out-Null
+        -storepass $pw -keypass $pw -dname "CN=$dn, O=$dn" | Out-Null
     $storeFile = $jks -replace "\\", "/"
     Write-TextFile $props "storeFile=$storeFile`nstorePassword=$pw`nkeyAlias=upload`nkeyPassword=$pw"
 }
@@ -716,6 +718,15 @@ $script:LogBox.ReadOnly = $true
 $script:LogBox.Font = New-Object System.Drawing.Font("Consolas", 8.5)
 
 # ---- theming ----
+# Remembers the theme and the developer name (so it is typed once per PC).
+function Save-GuiSettings {
+    try {
+        $name = ""
+        if ($txtDev) { $name = $txtDev.Text }
+        Write-TextFile $GuiSettings (@{ dark = $chkDark.Checked; devName = $name } | ConvertTo-Json)
+    } catch { }
+}
+
 function Apply-Theme([bool]$dark) {
     if ($dark) {
         $bg     = [System.Drawing.Color]::FromArgb(30, 30, 32)
@@ -775,7 +786,7 @@ function Apply-Theme([bool]$dark) {
     $lnkDoma.VisitedLinkColor = $accent
     $pv.BackColor = $pvBg
     $pv.Invalidate()
-    try { Write-TextFile $GuiSettings (@{ dark = $dark } | ConvertTo-Json) } catch { }
+    Save-GuiSettings
 }
 
 # ---- preview paint ----
@@ -1060,6 +1071,7 @@ $btnBuild.Add_Click({
             OutputDir = $txtOut.Text
         }
         $apk = Build-Apk $cfg
+        Save-GuiSettings
         [System.Windows.Forms.MessageBox]::Show("APK ready:`n$apk", "RMMZ APK Builder", "OK", "Information") | Out-Null
     } catch {
         Write-Log ("ERROR: " + $_.Exception.Message)
@@ -1073,7 +1085,11 @@ $btnBuild.Add_Click({
 # restore theme preference
 $darkPref = $true
 if (Test-Path $GuiSettings) {
-    try { $darkPref = [bool](Get-Content $GuiSettings -Raw | ConvertFrom-Json).dark } catch { }
+    try {
+        $saved = Get-Content $GuiSettings -Raw | ConvertFrom-Json
+        $darkPref = [bool]$saved.dark
+        if (-not $txtDev.Text -and $saved.devName) { $txtDev.Text = [string]$saved.devName }
+    } catch { }
 }
 $chkDark.Checked = $darkPref
 Apply-Theme $darkPref
