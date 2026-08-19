@@ -232,6 +232,21 @@ function Edit-Once([string]$text, [string]$pattern, [string]$replacement) {
     return $rx.Replace($text, $replacement, 1)
 }
 
+# Which audio extension a game actually ships. MV asks for .m4a on mobile
+# regardless, so a web export containing only ogg would be silent; pin what is
+# really there. "" means leave the engine's own choice alone.
+function Get-AudioExt([string]$dir) {
+    $audioDir = Join-Path $dir "audio"
+    if (-not (Test-Path $audioDir)) { return "" }
+    $ext = @{}
+    foreach ($f in (Get-ChildItem $audioDir -Recurse -File -ErrorAction SilentlyContinue)) {
+        $ext[$f.Extension.ToLower()] = $true
+    }
+    if ($ext.ContainsKey(".ogg") -or $ext.ContainsKey(".rpgmvo")) { return ".ogg" }
+    if ($ext.ContainsKey(".m4a") -or $ext.ContainsKey(".rpgmvm")) { return ".m4a" }
+    return ""
+}
+
 function Get-GameAspect([string]$dir) {
     # Width/height ratio of the game's render resolution (System.json).
     try {
@@ -571,6 +586,9 @@ $frameCss
     $controls = $controls.Replace("{{EXTRA_KEY}}", $extraKey[0])
     $controls = $controls.Replace("{{EXTRA_CODE}}", [string]$extraCode)
     $controls = $controls.Replace("{{GAME_VMARGIN}}", [string][Math]::Round($cfg.VMargin / 100.0, 3))
+    $audioExt = Get-AudioExt $cfg.GameDir
+    if ($audioExt) { Write-Log "   audio files are $audioExt - pinning that extension (MV asks for .m4a on mobile)" }
+    $controls = $controls.Replace("{{AUDIO_EXT}}", $audioExt)
     Write-TextFile (Join-Path $wwwDir "js\mobile-controls.js") $controls
 
     # --- native project (first build only) ---

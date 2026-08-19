@@ -66,6 +66,23 @@
         }
     }, 10);
 
+    // --- 1c. Audio file extension --------------------------------------------
+    // RPG Maker MV's AudioManager.audioFileExt() returns ".m4a" for ANY mobile
+    // device, but web exports normally ship .ogg (or .rpgmvo when encrypted)
+    // and no m4a at all - so every sound 404s and the game plays silent. The
+    // builder inspects the game's audio folder and pins the extension that is
+    // actually present. Empty means "leave the engine's own choice alone".
+    var AUDIO_EXT = "{{AUDIO_EXT}}";
+    if (AUDIO_EXT) {
+        var audioTries = 0;
+        var audioTimer = setInterval(function() {
+            if (++audioTries > 1500) { clearInterval(audioTimer); return; }
+            if (!window.AudioManager || typeof AudioManager.audioFileExt !== "function") { return; }
+            clearInterval(audioTimer);
+            AudioManager.audioFileExt = function() { return AUDIO_EXT; };
+        }, 10);
+    }
+
     // --- 2. Input shield -----------------------------------------------------
     // Element ids cover both engines: MZ (gameCanvas/gameVideo) and
     // MV (GameCanvas/GameVideo/UpperCanvas/ErrorPrinter).
