@@ -95,8 +95,89 @@ function Write-Log([string]$msg) {
     }
 }
 
+# Progress bar / status line (GUI only; no-ops in headless mode). Every call
+# pumps the Windows message queue, which is what keeps the window responsive
+# during the long one-time downloads instead of showing "Not responding".
+function Set-Progress([string]$text = "", [int]$percent = -1) {
+    if (-not $script:ProgBar) { return }
+    try {
+        if ($text) { $script:StatusLabel.Text = $text }
+        if ($percent -lt 0) {
+            if ($script:ProgBar.Style -ne "Marquee") { $script:ProgBar.Style = "Marquee" }
+        } else {
+            $script:ProgBar.Style = "Continuous"
+            $script:ProgBar.Value = [Math]::Max(0, [Math]::Min(100, $percent))
+        }
+        [System.Windows.Forms.Application]::DoEvents()
+    } catch { }
+}
+
+# Streamed download so the byte count (and the UI) keep moving.
+function Get-FileWithProgress([string]$url, [string]$dest, [string]$label) {
+    $req = [System.Net.WebRequest]::Create($url)
+    $req.Timeout = 120000
+    $resp = $req.GetResponse()
+    $total = [double]$resp.ContentLength
+    $in = $resp.GetResponseStream()
+    $out = [System.IO.File]::Create($dest)
+    $nextLog = 25
+    try {
+        $buf = New-Object byte[] 262144
+        $sum = 0.0
+        $lastUi = 0.0
+        $n = 0
+        while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+            $out.Write($buf, 0, $n)
+            $sum += $n
+            if (($sum - $lastUi) -ge 1048576) {
+                $lastUi = $sum
+                if ($total -gt 0) {
+                    $pct = [int](100.0 * $sum / $total)
+                    Set-Progress -text ("{0} - {1:N0} / {2:N0} MB" -f $label, ($sum / 1MB), ($total / 1MB)) -percent $pct
+                    if ((-not $script:ProgBar) -and $pct -ge $nextLog) {
+                        Write-Log ("   {0}% ..." -f $pct)
+                        $nextLog += 25
+                    }
+                } else {
+                    Set-Progress -text ("{0} - {1:N0} MB" -f $label, ($sum / 1MB))
+                }
+            }
+        }
+    } finally {
+        $out.Close(); $in.Close(); $resp.Close()
+    }
+}
+
+# Entry-by-entry extraction, so big archives report progress too.
+function Expand-WithProgress([string]$zipPath, [string]$dest, [string]$label) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    New-Item -ItemType Directory -Force $dest | Out-Null
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        $count = $zip.Entries.Count
+        $i = 0
+        foreach ($e in $zip.Entries) {
+            $i++
+            $target = Join-Path $dest $e.FullName
+            if (-not $e.Name) {
+                New-Item -ItemType Directory -Force $target | Out-Null
+            } else {
+                $dir = Split-Path $target -Parent
+                if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $target, $true)
+            }
+            if ($i % 75 -eq 0 -or $i -eq $count) {
+                Set-Progress -text ("{0} - {1:N0} / {2:N0} files" -f $label, $i, $count) -percent ([int](100.0 * $i / $count))
+            }
+        }
+    } finally {
+        $zip.Dispose()
+    }
+}
+
 function Run-Cmd([string]$desc, [string]$cwd, [string]$file, [string[]]$argList, [int[]]$okCodes = @(0)) {
     Write-Log "== $desc"
+    Set-Progress -text $desc
     Push-Location $cwd
     $oldEap = $ErrorActionPreference
     # Native tools write progress/warnings to stderr; don't let PowerShell
@@ -184,9 +265,9 @@ function Ensure-Jdk {
     New-Item -ItemType Directory -Force $JdkRoot | Out-Null
     New-Item -ItemType Directory -Force $DownloadDir | Out-Null
     $zip = Join-Path $DownloadDir "jdk21.zip"
-    $ProgressPreference = "SilentlyContinue"
-    Invoke-WebRequest -Uri "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse" -OutFile $zip
-    Expand-Archive $zip -DestinationPath $JdkRoot -Force
+    Get-FileWithProgress "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse" $zip "Downloading Java JDK 21"
+    Write-Log "   extracting..."
+    Expand-WithProgress $zip $JdkRoot "Extracting Java JDK 21"
     Remove-Item $zip -Force
     $jdk = Get-ChildItem $JdkRoot -Directory -Filter "jdk-21*" | Select-Object -First 1
     if (-not $jdk) { throw "JDK download/extract failed" }
@@ -197,20 +278,31 @@ function Ensure-Sdk([string]$jdkPath) {
     if (Test-Path "$SdkDir\platforms\android-36") { return }
     Write-Log "== Installing Android SDK (one-time, ~700 MB)"
     $env:JAVA_HOME = $jdkPath
-    $ProgressPreference = "SilentlyContinue"
     if (-not (Test-Path "$SdkDir\cmdline-tools\latest\bin\sdkmanager.bat")) {
         New-Item -ItemType Directory -Force $DownloadDir | Out-Null
         $cliZip = Join-Path $DownloadDir "cmdtools.zip"
-        Invoke-WebRequest -Uri "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip" -OutFile $cliZip
-        Expand-Archive $cliZip -DestinationPath "$SdkDir\cmdline-tools\tmp" -Force
+        Get-FileWithProgress "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip" $cliZip "Downloading Android command-line tools"
+        Expand-WithProgress $cliZip "$SdkDir\cmdline-tools\tmp" "Extracting Android command-line tools"
         Move-Item "$SdkDir\cmdline-tools\tmp\cmdline-tools" "$SdkDir\cmdline-tools\latest"
         Remove-Item "$SdkDir\cmdline-tools\tmp" -Recurse -Force
         Remove-Item $cliZip -Force
     }
     $sdkman = "$SdkDir\cmdline-tools\latest\bin\sdkmanager.bat"
+    Set-Progress -text "Accepting Android SDK licenses"
     $yes = @("y") * 40
     $yes | & $sdkman --licenses | Out-Null
-    & $sdkman "platform-tools" "platforms;android-36" "build-tools;36.0.0" | ForEach-Object { }
+    Write-Log "   downloading SDK packages - this is the slow part (a few minutes)"
+    Set-Progress -text "Installing Android SDK packages (~700 MB)"
+    & $sdkman "platform-tools" "platforms;android-36" "build-tools;36.0.0" 2>&1 | ForEach-Object {
+        # sdkmanager reports with carriage returns, so keep this to pumping the
+        # UI and surfacing the occasional milestone rather than the raw bar.
+        $line = ([string]$_)
+        if ($line -match "(Installing|Unzipping|Preparing|Downloading)\s+([^\s].{0,50})") {
+            Set-Progress -text ("Android SDK: " + $matches[1] + " " + $matches[2].Trim())
+        } else {
+            Set-Progress
+        }
+    }
     if (-not (Test-Path "$SdkDir\platforms\android-36")) { throw "Android SDK install failed" }
 }
 
@@ -509,6 +601,7 @@ if (keystorePropertiesFile.exists()) {
 
     # --- icons / splash ---
     Write-Log "== Generating icons and splash screens"
+    Set-Progress -text "Generating icons and splash screens"
     New-ImageAssets $projDir $cfg.IconPath $cfg.BackgroundImage (Parse-HexColor $cfg.BackgroundColor "#000000")
     Run-Cmd "Rendering Android image densities" $projDir "npx.cmd" @("--yes", "@capacitor/assets", "generate", "--android")
 
@@ -709,6 +802,14 @@ $hint3 = New-Control "Label" 640 390 576 32 "First build on a PC downloads build
 foreach ($h in @($hint1, $hint2, $hint3)) { $h.Font = New-Object System.Drawing.Font("Segoe UI", 8) }
 
 # ---- log ----
+$script:StatusLabel = New-Control "Label" 640 436 576 18 "" $form
+$script:ProgBar = New-Object System.Windows.Forms.ProgressBar
+$script:ProgBar.Location = New-Object System.Drawing.Point(640, 458)
+$script:ProgBar.Size = New-Object System.Drawing.Size(576, 22)
+$script:ProgBar.Style = "Continuous"
+$script:ProgBar.MarqueeAnimationSpeed = 30
+$form.Controls.Add($script:ProgBar)
+
 $lblLog = New-Control "Label" 16 552 100 18 "Build log" $form
 $btnClear = New-Control "Button" 1132 546 84 26 "Clear log" $form
 $script:LogBox = New-Control "TextBox" 16 576 1200 190 "" $form
@@ -774,7 +875,7 @@ function Apply-Theme([bool]$dark) {
         }
     }
     Walk $form
-    foreach ($h in @($lblSub, $lblPv, $hint1, $hint2, $hint3, $lblExtraHint)) { $h.ForeColor = $sub }
+    foreach ($h in @($lblSub, $lblPv, $hint1, $hint2, $hint3, $lblExtraHint, $script:StatusLabel)) { $h.ForeColor = $sub }
     $script:LogBox.BackColor = $logBg
     $script:LogBox.ForeColor = $logFg
     $btnBuild.BackColor = $accent
@@ -1058,6 +1159,7 @@ $btnBuild.Add_Click({
     try {
         $btnBuild.Enabled = $false
         $btnBuild.Text = "BUILDING..."
+        Set-Progress -text "Starting..."
         $cfg = @{
             GameDir = $txtGame.Text; DevName = $txtDev.Text; GameTitle = $txtTitle.Text
             VersionName = $txtVer.Text; IconPath = $txtIcon.Text
@@ -1071,6 +1173,7 @@ $btnBuild.Add_Click({
             OutputDir = $txtOut.Text
         }
         $apk = Build-Apk $cfg
+        Set-Progress -text "Done" -percent 100
         Save-GuiSettings
         [System.Windows.Forms.MessageBox]::Show("APK ready:`n$apk", "RMMZ APK Builder", "OK", "Information") | Out-Null
     } catch {
@@ -1079,6 +1182,9 @@ $btnBuild.Add_Click({
     } finally {
         $btnBuild.Enabled = $true
         $btnBuild.Text = "BUILD  APK"
+        $script:ProgBar.Style = "Continuous"
+        $script:ProgBar.Value = 0
+        $script:StatusLabel.Text = ""
     }
 })
 
