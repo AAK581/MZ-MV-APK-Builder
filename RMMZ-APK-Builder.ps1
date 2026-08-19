@@ -452,6 +452,14 @@ function Build-Apk([hashtable]$cfg) {
 
     Ensure-Node
     $jdk = Ensure-Jdk
+    # gradlew.bat needs a JVM to start at all, and it only looks at JAVA_HOME
+    # or PATH - the org.gradle.java.home property we write is used later, for
+    # compilation. Machines without any system Java failed here with
+    # "JAVA_HOME is not set" (exit 9009), so point both at our own JDK.
+    $env:JAVA_HOME = $jdk
+    if ($env:PATH -notlike "*$jdk\bin*") {
+        $env:PATH = (Join-Path $jdk "bin") + ";" + $env:PATH
+    }
     Ensure-Sdk $jdk
     Ensure-Keystore
 
