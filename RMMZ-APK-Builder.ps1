@@ -905,7 +905,7 @@ if (keystorePropertiesFile.exists()) {
         Write-Log "   Play upload (AAB):       $destAab"
         Write-Log "   Phone testing (debug):   $destTest"
         Write-Log "   itch.io (no billing):    $dest"
-        Write-Log " No ads in this build - just the Support the developer!"
+        Write-Log " No ads in this build - just the Support the dev!"
         Write-Log " button. The tip purchase only works once the app is on"
         Write-Log " Play (test it there with license testers)."
     } elseif ($cfg.PlayMode) {
@@ -1450,7 +1450,7 @@ function Show-PlayIdsDialog {
                 $boxes["ProductId"].Text = "support_dev"
             }
             $boxes["PriceLabel"].Text = $(if ($boxes["PriceLabel"].Text) { $boxes["PriceLabel"].Text } else { '$0.99' })
-            $note.Text = "Support variant: a repeatable 'Support the developer!' tip. No AdMob needed - just create the in-app product in Play Console and make it consumable-style (the app consumes it so it can be bought again)."
+            $note.Text = "Support variant: a repeatable 'Support the dev!' tip. No AdMob needed - just create the in-app product in Play Console and make it consumable-style (the app consumes it so it can be bought again)."
         } else {
             if ($boxes["ProductId"].Text -eq "support_dev") { $boxes["ProductId"].Text = "remove_ads" }
             $note.Text = "These are saved per game. Each game needs its own AdMob app + ad unit, and its own in-app product in Play Console. Debug builds always use Google TEST ads regardless of these IDs."
@@ -1526,7 +1526,7 @@ $btnHelp.Add_Click({
         "GOOGLE PLAY BUILDS",
         "Tick 'Google Play build' and fill in your IDs (Play IDs... button) to also produce an .aab for the Play Store with interstitial ads and a 'Remove Ads' purchase. You need: an AdMob account (per-game app + interstitial ad unit), and a Play Console app with a one-time product (default ID: remove_ads). Ads show where the game calls window.showAdBreak && window.showAdBreak(); - add that as a Script event command at natural break points in the RPG Maker editor. Each build then produces three files: the Play .aab (real ads), a TEST-ads .apk for your own phone (never tap real ads on your own device - AdMob bans accounts for it), and the clean itch .apk (no ads, no billing).",
         "",
-        "For short games where ads feel wrong, pick 'Support button only' in the Play IDs dialog instead: no ads and no AdMob account needed, just a 'Support the developer!' tip button on the title screen and in the pause menu. Create the in-app product in Play Console (default ID: support_dev); the app consumes each purchase so players can tip more than once. The itch .apk stays clean either way.",
+        "For short games where ads feel wrong, pick 'Support button only' in the Play IDs dialog instead: no ads and no AdMob account needed, just a 'Support the dev!' tip button on the title screen and in the pause menu. Create the in-app product in Play Console (default ID: support_dev); the app consumes each purchase so players can tip more than once. The itch .apk stays clean either way.",
         "",
         "REQUIREMENTS",
         "Node.js (checked at startup). Everything else (JDK, Android SDK, Gradle) is downloaded automatically on the first build.",

@@ -1,5 +1,5 @@
 /*
- * support.js - "Support the developer!" tip button (no ads).
+ * support.js - "Support the dev!" tip button (no ads).
  *
  * Play-mode alternative to ads for short games: a repeatable consumable
  * in-app purchase. Shown as a title-screen button and an in-game menu
@@ -30,8 +30,8 @@
     var priceLabel = CFG.supportPriceLabel || "";
 
     function labelText() {
-        return priceLabel ? "Support the developer! - " + priceLabel
-                          : "Support the developer!";
+        return priceLabel ? "Support the dev! - " + priceLabel
+                          : "Support the dev!";
     }
 
     function refreshMenuCommands() {
