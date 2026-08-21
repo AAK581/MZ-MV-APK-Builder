@@ -874,10 +874,13 @@ if (keystorePropertiesFile.exists()) {
         foreach ($f in @($aab, $apkTest, $apk)) {
             if (-not (Test-Path $f)) { throw "Build reported success but output not found: $f" }
         }
+        # Three files per build - keep them together in their own folder.
+        $bundleDir = Join-Path $cfg.OutputDir ($safeTitle + " v" + $cfg.VersionName)
+        New-Item -ItemType Directory -Force $bundleDir | Out-Null
         $testTag  = if ($cfg.PlayVariant -eq "support") { " (Play test).apk" } else { " (Play test ads).apk" }
-        $destAab  = Join-Path $cfg.OutputDir ($safeTitle + " v" + $cfg.VersionName + " (Play).aab")
-        $destTest = Join-Path $cfg.OutputDir ($safeTitle + " v" + $cfg.VersionName + $testTag)
-        $dest     = Join-Path $cfg.OutputDir ($safeTitle + " v" + $cfg.VersionName + ".apk")
+        $destAab  = Join-Path $bundleDir ($safeTitle + " v" + $cfg.VersionName + " (Play).aab")
+        $destTest = Join-Path $bundleDir ($safeTitle + " v" + $cfg.VersionName + $testTag)
+        $dest     = Join-Path $bundleDir ($safeTitle + " v" + $cfg.VersionName + ".apk")
         Copy-Item $aab $destAab -Force
         Copy-Item $apkTest $destTest -Force
         Copy-Item $apk $dest -Force
