@@ -1,0 +1,300 @@
+/*
+ * monetization.js - AdMob interstitials + "remove ads" purchase.
+ *
+ * Active only when MOBILE_CONFIG.ads is true AND running inside the native
+ * app (never on itch web/desktop). Everything is driven by two hooks:
+ *
+ *   window.showAdBreak()  - call from an RPG Maker event (Script command:
+ *                           `window.showAdBreak && window.showAdBreak();`)
+ *                           at natural break points (end of each day).
+ *                           No-op if ads were removed, an ad isn't loaded
+ *                           yet (e.g. offline), or ads are disabled.
+ *
+ *   window.buyRemoveAds() - starts the purchase flow. Wired to the title
+ *                           screen button; also callable from the console.
+ *
+ * Ownership of the remove-ads product is re-checked against Google Play on
+ * every launch (getPurchases), with localStorage as the offline cache.
+ */
+(function() {
+    "use strict";
+
+    var CFG = window.MOBILE_CONFIG || {};
+    var STORAGE_KEY = "tc_ads_removed";
+
+    // Always defined so game event scripts can call it unconditionally.
+    window.showAdBreak = function() {};
+
+    var isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform &&
+                      window.Capacitor.isNativePlatform());
+    if (!CFG.ads || !isNative) {
+        return;
+    }
+
+    var Plugins = window.Capacitor.Plugins || {};
+    var AdMob = Plugins.AdMob;
+    var Purchases = Plugins.NativePurchases;
+
+    var adsRemoved = false;
+    try { adsRemoved = localStorage.getItem(STORAGE_KEY) === "1"; } catch (e) { /* ignore */ }
+    var adReady = false;
+    var prepareAttempts = 0;
+    var adShowing = false;
+    var removeAdsBtn = null;
+    var priceLabel = CFG.removeAdsPriceLabel || "";
+
+    function setAdsRemoved() {
+        adsRemoved = true;
+        try { localStorage.setItem(STORAGE_KEY, "1"); } catch (e) { /* ignore */ }
+        if (removeAdsBtn) {
+            removeAdsBtn.style.display = "none";
+        }
+        refreshMenuCommands();
+    }
+
+    // Drop the "Remove Ads" entry from an open menu once ads are gone.
+    function refreshMenuCommands() {
+        try {
+            var scene = window.SceneManager && SceneManager._scene;
+            if (scene && scene._commandWindow && scene._commandWindow.refresh) {
+                scene._commandWindow.refresh();
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    // - pause/resume game audio while the native ad covers the WebView -
+    function suspendAudio() {
+        try {
+            if (window.WebAudio && WebAudio._context && WebAudio._context.state === "running") {
+                WebAudio._context.suspend();
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    function resumeAudio() {
+        try {
+            if (window.WebAudio && WebAudio._context && WebAudio._context.state === "suspended") {
+                WebAudio._context.resume();
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    // - interstitial ads ---------
+    function prepareNext() {
+        if (adsRemoved || !AdMob) return;
+        AdMob.prepareInterstitial({
+            adId: CFG.interstitialAdUnitId,
+            isTesting: !!CFG.testAds
+        }).then(function() {
+            adReady = true;
+            prepareAttempts = 0;
+        }).catch(function(e) {
+            adReady = false;
+            console.warn("Interstitial failed to load:", e && e.message);
+            // Loads fail transiently on some devices (outdated Android System
+            // WebView -> "Unable to obtain a JavascriptEngine", flaky network,
+            // ad-blocking DNS). Retry with backoff so a later ad break still
+            // has an ad ready.
+            if (++prepareAttempts <= 5) {
+                setTimeout(prepareNext, 30000 * prepareAttempts);
+            }
+        });
+    }
+
+    function initAds() {
+        if (!AdMob) {
+            console.warn("AdMob plugin not available");
+            return;
+        }
+        AdMob.addListener("interstitialAdShowed", function() {
+            adShowing = true;
+            suspendAudio();
+        });
+        AdMob.addListener("interstitialAdDismissed", function() {
+            adShowing = false;
+            resumeAudio();
+            prepareNext();
+        });
+        AdMob.addListener("interstitialAdFailedToShow", function() {
+            adShowing = false;
+            resumeAudio();
+            prepareNext();
+        });
+        AdMob.initialize({ initializeForTesting: !!CFG.testAds })
+            .then(prepareNext)
+            .catch(function(e) {
+                console.warn("AdMob init failed:", e && e.message);
+            });
+    }
+
+    window.showAdBreak = function() {
+        if (adsRemoved || adShowing || !AdMob) return;
+        if (!adReady) {
+            prepareNext(); // try again for the next break (e.g. was offline)
+            return;
+        }
+        adReady = false;
+        AdMob.showInterstitial().catch(function(e) {
+            console.warn("Interstitial failed to show:", e && e.message);
+            resumeAudio();
+            prepareNext();
+        });
+    };
+
+    // - remove-ads purchase --------
+    function checkOwned() {
+        if (!Purchases) return;
+        Purchases.getPurchases({ productType: "inapp" }).then(function(res) {
+            var owned = ((res && res.purchases) || []).some(function(t) {
+                return t.productIdentifier === CFG.removeAdsProductId;
+            });
+            if (owned) setAdsRemoved();
+        }).catch(function(e) {
+            console.warn("getPurchases failed:", e && e.message);
+        });
+    }
+
+    function buyRemoveAds() {
+        if (!Purchases) {
+            alert("Billing is not available on this device.");
+            return;
+        }
+        Purchases.purchaseProduct({
+            productIdentifier: CFG.removeAdsProductId,
+            productType: "inapp"
+        }).then(function() {
+            setAdsRemoved();
+            alert("Ads removed. Thank you for the support!");
+        }).catch(function(e) {
+            var msg = (e && e.message) || String(e);
+            if (/already|owned/i.test(msg)) {
+                setAdsRemoved();
+                alert("Purchase restored - ads removed!");
+            } else if (!/cancel/i.test(msg)) {
+                alert("Purchase failed: " + msg);
+            }
+        });
+    }
+    window.buyRemoveAds = buyRemoveAds;
+
+    // - title-screen "Remove Ads" button -------
+    function buildButton() {
+        var style = document.createElement("style");
+        style.textContent =
+            "#tc-removeads {" +
+            "  position: fixed; right: 2.5vmin; top: 2.5vmin;" +
+            "  z-index: 21; padding: 2vmin 4vmin; border-radius: 5vmin;" +
+            "  background: rgba(13, 71, 110, 0.9); color: #e8f2fa;" +
+            "  border: 2px solid rgba(255, 255, 255, 0.35);" +
+            "  font: bold 3.4vmin/1.2 sans-serif; display: none; touch-action: none;" +
+            "  -webkit-user-select: none; user-select: none;" +
+            "  -webkit-tap-highlight-color: transparent;" +
+            "}";
+        document.head.appendChild(style);
+
+        removeAdsBtn = document.createElement("div");
+        removeAdsBtn.id = "tc-removeads";
+        removeAdsBtn.textContent = "Remove Ads - " + priceLabel;
+        removeAdsBtn.addEventListener("pointerdown", function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            buyRemoveAds();
+        });
+        ["touchstart", "touchmove", "touchend", "mousedown", "mouseup", "contextmenu"]
+            .forEach(function(t) {
+                removeAdsBtn.addEventListener(t, function(e) {
+                    e.stopPropagation();
+                    if (e.cancelable && (t.indexOf("touch") === 0 || t === "contextmenu")) {
+                        e.preventDefault();
+                    }
+                }, { passive: false });
+            });
+        document.body.appendChild(removeAdsBtn);
+
+        // Only show on the title screen, and only while ads are active.
+        setInterval(function() {
+            var onTitle = window.SceneManager && window.Scene_Title &&
+                          SceneManager._scene instanceof Scene_Title;
+            removeAdsBtn.style.display = (onTitle && !adsRemoved) ? "block" : "none";
+        }, 400);
+    }
+
+    // ---- localized price -----------------------------------------------
+    // Play charges in the player's own currency, so ask the store for the
+    // real display price instead of showing the hardcoded USD label.
+    function fetchPrice() {
+        if (!Purchases || !Purchases.getProduct) return;
+        Purchases.getProduct({
+            productIdentifier: CFG.removeAdsProductId,
+            productType: "inapp"
+        }).then(function(res) {
+            var p = res && (res.product || res);
+            if (p && p.priceString) {
+                priceLabel = p.priceString;
+                if (removeAdsBtn) {
+                    removeAdsBtn.textContent = "Remove Ads - " + priceLabel;
+                }
+                refreshMenuCommands();
+            }
+        }).catch(function(e) {
+            // Product not published yet, or offline: keep the config label.
+            console.warn("getProduct failed:", e && e.message);
+        });
+    }
+
+    // ---- "Remove Ads" entry in the in-game menu --------------------------
+    // Added as a real menu command (not an overlay) so it matches the game's
+    // own UI and never covers anything. Aliases are installed once the engine
+    // classes exist - MZ loads its scripts asynchronously after this file.
+    function patchMenu() {
+        var tries = 0;
+        var timer = setInterval(function() {
+            if (++tries > 1500) { clearInterval(timer); return; }
+            if (!window.Window_MenuCommand || !window.Scene_Menu) { return; }
+            clearInterval(timer);
+            try {
+                var makeList = Window_MenuCommand.prototype.makeCommandList;
+                Window_MenuCommand.prototype.makeCommandList = function() {
+                    makeList.call(this);
+                    if (adsRemoved) { return; }
+                    this.addCommand("Remove Ads - " + priceLabel, "removeAds", true);
+                    // Sit above "Game End" instead of dangling below it.
+                    var list = this._list;
+                    for (var i = 0; i < list.length; i++) {
+                        if (list[i].symbol === "gameEnd") {
+                            list.splice(i, 0, list.pop());
+                            break;
+                        }
+                    }
+                };
+                var createCmd = Scene_Menu.prototype.createCommandWindow;
+                Scene_Menu.prototype.createCommandWindow = function() {
+                    createCmd.call(this);
+                    this._commandWindow.setHandler("removeAds", function() {
+                        buyRemoveAds();
+                        var scene = SceneManager._scene;
+                        if (scene && scene._commandWindow) {
+                            scene._commandWindow.activate();
+                        }
+                    });
+                };
+            } catch (e) {
+                console.warn("Menu patch failed:", e && e.message);
+            }
+        }, 10);
+    }
+
+    function start() {
+        initAds();
+        checkOwned();
+        buildButton();
+        fetchPrice();
+        patchMenu();
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", start);
+    } else {
+        start();
+    }
+})();
