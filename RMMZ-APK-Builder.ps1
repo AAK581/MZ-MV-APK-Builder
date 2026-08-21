@@ -1282,11 +1282,11 @@ $pv.Add_Paint({
         $g.DrawString($def[2], $bfont, $wb, (New-Object System.Drawing.RectangleF([float]$def[0], [float]$def[1], [float]$cell, [float]$cell)), $sf2)
     }
 
-    # controls-visibility toggle (bottom center; players start with controls
-    # hidden and a "+" - the preview shows the shown state, so draw "-")
-    $td = 7 * $vm
+    # controls-visibility toggle (bottom center, half-size and flush with the
+    # screen edge so it stays out of the game frame; controls start visible)
+    $td = 3.5 * $vm
     $tx = ($W - $td) / 2
-    $ty = $H - 1 * $vm - $td
+    $ty = $H - $td
     $tb2 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(128, 20, 20, 20))
     $g.FillEllipse($tb2, [float]$tx, [float]$ty, [float]$td, [float]$td)
     $g.DrawString("-", $bfont, $wb, (New-Object System.Drawing.RectangleF([float]$tx, [float]$ty, [float]$td, [float]$td)), $sf2)
