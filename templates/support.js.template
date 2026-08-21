@@ -1,0 +1,174 @@
+/*
+ * support.js - "Support the developer!" tip button (no ads).
+ *
+ * Play-mode alternative to ads for short games: a repeatable consumable
+ * in-app purchase. Shown as a title-screen button and an in-game menu
+ * command. window.showAdBreak stays defined as a no-op so game events
+ * with the ad Script command never crash.
+ *
+ *   window.supportDeveloper() - starts the tip purchase. Wired to the
+ *                               title button; also callable manually.
+ */
+(function() {
+    "use strict";
+
+    var CFG = window.MOBILE_CONFIG || {};
+
+    // Always defined so game event scripts can call it unconditionally.
+    window.showAdBreak = window.showAdBreak || function() {};
+
+    var isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform &&
+                      window.Capacitor.isNativePlatform());
+    if (!CFG.support || !isNative) {
+        return;
+    }
+
+    var Plugins = window.Capacitor.Plugins || {};
+    var Purchases = Plugins.NativePurchases;
+
+    var supportBtn = null;
+    var priceLabel = CFG.supportPriceLabel || "";
+
+    function labelText() {
+        return priceLabel ? "Support the developer! - " + priceLabel
+                          : "Support the developer!";
+    }
+
+    function refreshMenuCommands() {
+        try {
+            var scene = window.SceneManager && SceneManager._scene;
+            if (scene && scene._commandWindow && scene._commandWindow.refresh) {
+                scene._commandWindow.refresh();
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    // ---- tip purchase (consumable: can be bought again and again) --------
+    function supportDeveloper() {
+        if (!Purchases) {
+            alert("Billing is not available on this device.");
+            return;
+        }
+        Purchases.purchaseProduct({
+            productIdentifier: CFG.supportProductId,
+            productType: "inapp",
+            isConsumable: true
+        }).then(function() {
+            alert("Thank you so much for your support!");
+        }).catch(function(e) {
+            var msg = (e && e.message) || String(e);
+            if (!/cancel/i.test(msg)) {
+                alert("Purchase failed: " + msg);
+            }
+        });
+    }
+    window.supportDeveloper = supportDeveloper;
+
+    // ---- title-screen button ---------------------------------------------
+    function buildButton() {
+        var style = document.createElement("style");
+        style.textContent =
+            "#tc-support {" +
+            "  position: fixed; right: 2.5vmin; top: 2.5vmin;" +
+            "  z-index: 21; padding: 2vmin 4vmin; border-radius: 5vmin;" +
+            "  background: rgba(13, 110, 71, 0.9); color: #e8faf2;" +
+            "  border: 2px solid rgba(255, 255, 255, 0.35);" +
+            "  font: bold 3.4vmin/1.2 sans-serif; display: none; touch-action: none;" +
+            "  -webkit-user-select: none; user-select: none;" +
+            "  -webkit-tap-highlight-color: transparent;" +
+            "}";
+        document.head.appendChild(style);
+
+        supportBtn = document.createElement("div");
+        supportBtn.id = "tc-support";
+        supportBtn.textContent = labelText();
+        supportBtn.addEventListener("pointerdown", function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            supportDeveloper();
+        });
+        ["touchstart", "touchmove", "touchend", "mousedown", "mouseup", "contextmenu"]
+            .forEach(function(t) {
+                supportBtn.addEventListener(t, function(e) {
+                    e.stopPropagation();
+                    if (e.cancelable && (t.indexOf("touch") === 0 || t === "contextmenu")) {
+                        e.preventDefault();
+                    }
+                }, { passive: false });
+            });
+        document.body.appendChild(supportBtn);
+
+        setInterval(function() {
+            var onTitle = window.SceneManager && window.Scene_Title &&
+                          SceneManager._scene instanceof Scene_Title;
+            supportBtn.style.display = onTitle ? "block" : "none";
+        }, 400);
+    }
+
+    // ---- localized price ---------------------------------------------------
+    function fetchPrice() {
+        if (!Purchases || !Purchases.getProduct) return;
+        Purchases.getProduct({
+            productIdentifier: CFG.supportProductId,
+            productType: "inapp"
+        }).then(function(res) {
+            var p = res && (res.product || res);
+            if (p && p.priceString) {
+                priceLabel = p.priceString;
+                if (supportBtn) { supportBtn.textContent = labelText(); }
+                refreshMenuCommands();
+            }
+        }).catch(function(e) {
+            console.warn("getProduct failed:", e && e.message);
+        });
+    }
+
+    // ---- in-game menu command ----------------------------------------------
+    function patchMenu() {
+        var tries = 0;
+        var timer = setInterval(function() {
+            if (++tries > 1500) { clearInterval(timer); return; }
+            if (!window.Window_MenuCommand || !window.Scene_Menu) { return; }
+            clearInterval(timer);
+            try {
+                var makeList = Window_MenuCommand.prototype.makeCommandList;
+                Window_MenuCommand.prototype.makeCommandList = function() {
+                    makeList.call(this);
+                    this.addCommand(labelText(), "supportDev", true);
+                    var list = this._list;
+                    for (var i = 0; i < list.length; i++) {
+                        if (list[i].symbol === "gameEnd") {
+                            list.splice(i, 0, list.pop());
+                            break;
+                        }
+                    }
+                };
+                var createCmd = Scene_Menu.prototype.createCommandWindow;
+                Scene_Menu.prototype.createCommandWindow = function() {
+                    createCmd.call(this);
+                    this._commandWindow.setHandler("supportDev", function() {
+                        supportDeveloper();
+                        var scene = SceneManager._scene;
+                        if (scene && scene._commandWindow) {
+                            scene._commandWindow.activate();
+                        }
+                    });
+                };
+            } catch (e) {
+                console.warn("Menu patch failed:", e && e.message);
+            }
+        }, 10);
+    }
+
+    function start() {
+        buildButton();
+        fetchPrice();
+        patchMenu();
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", start);
+    } else {
+        start();
+    }
+})();
