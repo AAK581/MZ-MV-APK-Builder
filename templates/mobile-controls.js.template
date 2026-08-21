@@ -161,12 +161,12 @@
         ".tc-btn.small { font-size: calc(3.6vmin * {{SCALE}}); }",
         ".tc-pressed { filter: brightness(1.7); }",
         "#tc-toggle {",
-        "  position: fixed; left: 50%; bottom: 1vmin; transform: translateX(-50%);",
-        "  width: 7vmin; height: 7vmin; max-width: 46px; max-height: 46px;",
+        "  position: fixed; left: 50%; bottom: 0; transform: translateX(-50%);",
+        "  width: 3.5vmin; height: 3.5vmin; max-width: 23px; max-height: 23px;",
         "  background: rgba(20, 20, 20, 0.5); color: #dddddd;",
         "  border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 50%;",
         "  display: flex; align-items: center; justify-content: center;",
-        "  font: bold 4.5vmin/1 sans-serif; z-index: 21; touch-action: none;",
+        "  font: bold 2.2vmin/1 sans-serif; z-index: 21; touch-action: none;",
         "}",
         ".tc-hidden { display: none !important; }"
     ].join("\n");
