@@ -366,11 +366,11 @@
         });
         root.appendChild(buttons);
 
-        // Controls start hidden behind a small "+" button (bottom center);
-        // pressing it shows them and turns it into a minus. The choice is
-        // remembered between sessions.
-        var controlsVisible = false;
-        try { controlsVisible = localStorage.getItem("tc_controls_visible") === "1"; } catch (e) { /* ignore */ }
+        // Controls are visible by default. The small round button at bottom
+        // centre hides them (becoming "+") and restores them, and the choice
+        // is remembered between sessions.
+        var controlsVisible = true;
+        try { controlsVisible = localStorage.getItem("tc_controls_visible") !== "0"; } catch (e) { /* ignore */ }
 
         var toggle = document.createElement("div");
         toggle.id = "tc-toggle";
