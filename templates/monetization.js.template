@@ -40,6 +40,10 @@
     var adReady = false;
     var prepareAttempts = 0;
     var adShowing = false;
+    var lastAdAt = 0;
+    // Soft frequency cap: never two ads within this many seconds, even if
+    // the game hits two ad breaks back-to-back (e.g. quick scene skips).
+    var MIN_GAP_MS = (CFG.minAdIntervalSec || 300) * 1000;
     var removeAdsBtn = null;
     var priceLabel = CFG.removeAdsPriceLabel || "";
 
@@ -129,11 +133,13 @@
 
     window.showAdBreak = function() {
         if (adsRemoved || adShowing || !AdMob) return;
+        if (Date.now() - lastAdAt < MIN_GAP_MS) return;
         if (!adReady) {
             prepareNext(); // try again for the next break (e.g. was offline)
             return;
         }
         adReady = false;
+        lastAdAt = Date.now();
         AdMob.showInterstitial().catch(function(e) {
             console.warn("Interstitial failed to show:", e && e.message);
             resumeAudio();
