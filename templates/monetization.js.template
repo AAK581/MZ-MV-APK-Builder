@@ -9,12 +9,33 @@
  *                           at natural break points (end of each day).
  *                           No-op if ads were removed, an ad isn't loaded
  *                           yet (e.g. offline), or ads are disabled.
+ *                           Games exported for the Game Monetize portal
+ *                           call `window.sdk.showBanner()` at their ad
+ *                           breaks instead; inside the app that object is
+ *                           provided here and routes to showAdBreak(), so
+ *                           one export serves both the portal and Play.
+ *
+ *   While the native interstitial is up the game loop is stopped and the
+ *   audio context suspended, then both resume when it is dismissed - the
+ *   event that triggered the break continues exactly where it left off.
+ *
+ *   TEST-ads builds (MOBILE_CONFIG.testAds) show a small status line at the
+ *   bottom of the screen with what the ad pipeline is doing - init, load,
+ *   show results and why an ad break was skipped - since a phone has no
+ *   console. Release builds never show it.
  *
  *   window.buyRemoveAds() - starts the purchase flow. Wired to the title
  *                           screen button; also callable from the console.
  *
  * Ownership of the remove-ads product is re-checked against Google Play on
- * every launch (getPurchases), with localStorage as the offline cache.
+ * every launch (getPurchases), with localStorage as the offline cache. When
+ * Play answers and the product is NOT owned any more (refunded or revoked
+ * order), the cache is dropped and ads come back; when Play cannot be
+ * reached the cache stands, so a paying player offline stays ad-free.
+ *
+ * TEST-ads builds also expose window.__adsDebug = { reset(), break() } so
+ * the ad pipeline can be driven from a DevTools console: reset() forgets
+ * the remove-ads entitlement for this session, break() is an ad break.
  */
 (function() {
     "use strict";
@@ -27,6 +48,19 @@
 
     var isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform &&
                       window.Capacitor.isNativePlatform());
+
+    // Game Monetize compatibility: the builder strips the portal SDK out of
+    // index.html (its ads must not show inside the app), so events that do
+    // `window.sdk && window.sdk.showBanner && window.sdk.showBanner();` get
+    // the same object with the native interstitial behind it. Defined on
+    // every native build so an unguarded sdk.showBanner() never throws on
+    // the itch flavor either - there it is just a no-op like showAdBreak.
+    if (isNative && !window.sdk) {
+        window.sdk = {
+            showBanner: function() { window.showAdBreak(); }
+        };
+    }
+
     if (!CFG.ads || !isNative) {
         return;
     }
@@ -47,13 +81,49 @@
     var removeAdsBtn = null;
     var priceLabel = CFG.removeAdsPriceLabel || "";
 
-    function setAdsRemoved() {
+    // - test-build status line -
+    var debugLines = [];
+    var debugEl = null;
+    function adDebug(msg) {
+        console.log("[ads] " + msg);
+        if (!CFG.testAds) return;
+        var stamp = new Date().toTimeString().slice(0, 8);
+        debugLines.push(stamp + " " + msg);
+        if (debugLines.length > 6) debugLines.shift();
+        if (!debugEl && document.body) {
+            debugEl = document.createElement("div");
+            debugEl.id = "tc-addebug";
+            debugEl.style.cssText =
+                "position:fixed;left:0;bottom:0;z-index:30;max-width:100vw;" +
+                "padding:0.6vmin 1.2vmin;background:rgba(0,0,0,0.6);color:#9f9;" +
+                "font:2.2vmin/1.3 monospace;white-space:pre;pointer-events:none;";
+            document.body.appendChild(debugEl);
+        }
+        if (debugEl) debugEl.textContent = debugLines.join("\n");
+    }
+
+    function setAdsRemoved(reason) {
         adsRemoved = true;
+        adDebug("ads removed (" + (reason || "purchase") + ") - no more ad breaks");
         try { localStorage.setItem(STORAGE_KEY, "1"); } catch (e) { /* ignore */ }
         if (removeAdsBtn) {
             removeAdsBtn.style.display = "none";
         }
         refreshMenuCommands();
+    }
+
+    // Play no longer reports the product as owned (refund / revoked order):
+    // forget the cached entitlement so ads resume.
+    function clearAdsRemoved(reason) {
+        if (!adsRemoved) return;
+        adsRemoved = false;
+        try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+        adDebug("ads restored (" + reason + ")");
+        if (removeAdsBtn) {
+            removeAdsBtn.style.display = "";
+        }
+        refreshMenuCommands();
+        prepareNext();
     }
 
     // Drop the "Remove Ads" entry from an open menu once ads are gone.
@@ -83,18 +153,60 @@
         } catch (e) { /* ignore */ }
     }
 
+    // - freeze the game while the native ad covers it -
+    // The interstitial is its own Android activity. The WebView keeps
+    // ticking for a few frames before it opens and, on some devices, under
+    // it, so everything the event does after the ad break (fade-in, the
+    // next scene's dialogue) would play unseen. Stop the engine's game loop
+    // (MZ: Graphics.stopGameLoop, MV: SceneManager._stopped) for the ad's
+    // duration and restart it on dismissal.
+    var gamePaused = false;
+    var pauseWatchdog = null;
+    // If the SDK never reports the ad as shown (silent failure), do not
+    // leave the game frozen: give up after this long and carry on.
+    var SHOW_TIMEOUT_MS = 8000;
+
+    function pauseGame() {
+        if (gamePaused) return;
+        gamePaused = true;
+        suspendAudio();
+        try {
+            if (window.SceneManager && typeof SceneManager.stop === "function") {
+                SceneManager.stop();
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    function resumeGame() {
+        if (pauseWatchdog) {
+            clearTimeout(pauseWatchdog);
+            pauseWatchdog = null;
+        }
+        if (!gamePaused) return;
+        gamePaused = false;
+        try {
+            if (window.SceneManager && typeof SceneManager.resume === "function") {
+                SceneManager.resume();
+            }
+        } catch (e) { /* ignore */ }
+        resumeAudio();
+    }
+
     // - interstitial ads ---------
     function prepareNext() {
         if (adsRemoved || !AdMob) return;
+        adDebug("loading interstitial" + (CFG.testAds ? " (test unit)" : "") + "...");
         AdMob.prepareInterstitial({
             adId: CFG.interstitialAdUnitId,
             isTesting: !!CFG.testAds
         }).then(function() {
             adReady = true;
             prepareAttempts = 0;
+            adDebug("interstitial loaded - ready for the next ad break");
         }).catch(function(e) {
             adReady = false;
             console.warn("Interstitial failed to load:", e && e.message);
+            adDebug("load failed (try " + (prepareAttempts + 1) + "): " + ((e && e.message) || e));
             // Loads fail transiently on some devices (outdated Android System
             // WebView -> "Unable to obtain a JavascriptEngine", flaky network,
             // ad-blocking DNS). Retry with backoff so a later ad break still
@@ -106,43 +218,81 @@
     }
 
     function initAds() {
+        adDebug("AdMob plugin " + (AdMob ? "found" : "MISSING") +
+                ", billing " + (Purchases ? "found" : "missing") +
+                (adsRemoved ? ", ads removed (saved on device)" : ""));
         if (!AdMob) {
             console.warn("AdMob plugin not available");
             return;
         }
         AdMob.addListener("interstitialAdShowed", function() {
             adShowing = true;
-            suspendAudio();
+            adDebug("ad is showing");
+            // The ad is up: the watchdog is no longer needed, and the game
+            // must stay frozen for as long as the ad is on screen.
+            if (pauseWatchdog) {
+                clearTimeout(pauseWatchdog);
+                pauseWatchdog = null;
+            }
+            pauseGame();
         });
         AdMob.addListener("interstitialAdDismissed", function() {
             adShowing = false;
-            resumeAudio();
+            adDebug("ad dismissed - game resumed");
+            resumeGame();
             prepareNext();
         });
-        AdMob.addListener("interstitialAdFailedToShow", function() {
+        AdMob.addListener("interstitialAdFailedToShow", function(e) {
             adShowing = false;
-            resumeAudio();
+            adDebug("show failed: " + ((e && e.message) || JSON.stringify(e)));
+            resumeGame();
             prepareNext();
         });
         AdMob.initialize({ initializeForTesting: !!CFG.testAds })
-            .then(prepareNext)
+            .then(function() {
+                adDebug("AdMob initialized");
+                prepareNext();
+            })
             .catch(function(e) {
                 console.warn("AdMob init failed:", e && e.message);
+                adDebug("init failed: " + ((e && e.message) || e));
             });
     }
 
     window.showAdBreak = function() {
-        if (adsRemoved || adShowing || !AdMob) return;
-        if (Date.now() - lastAdAt < MIN_GAP_MS) return;
+        if (adsRemoved) { adDebug("ad break skipped: ads removed"); return; }
+        if (adShowing) { adDebug("ad break skipped: an ad is already showing"); return; }
+        if (!AdMob) { adDebug("ad break skipped: AdMob plugin missing"); return; }
+        if (Date.now() - lastAdAt < MIN_GAP_MS) {
+            adDebug("ad break skipped: last ad " + Math.round((Date.now() - lastAdAt) / 1000) +
+                    "s ago, minimum gap " + (MIN_GAP_MS / 1000) + "s");
+            return;
+        }
         if (!adReady) {
+            adDebug("ad break skipped: no interstitial loaded yet - loading for the next one");
             prepareNext(); // try again for the next break (e.g. was offline)
             return;
         }
+        adDebug("ad break: showing interstitial");
         adReady = false;
         lastAdAt = Date.now();
+        // Freeze right now, before the ad activity opens, so the event that
+        // called us does not run on for the frames in between.
+        pauseGame();
+        pauseWatchdog = setTimeout(function() {
+            pauseWatchdog = null;
+            if (!adShowing) {
+                console.warn("Interstitial never reported as shown; resuming game");
+                adDebug("ad never appeared within " + (SHOW_TIMEOUT_MS / 1000) + "s - game resumed");
+                resumeGame();
+                prepareNext();
+            }
+        }, SHOW_TIMEOUT_MS);
         AdMob.showInterstitial().catch(function(e) {
             console.warn("Interstitial failed to show:", e && e.message);
-            resumeAudio();
+            adDebug("show rejected: " + ((e && e.message) || e));
+            adShowing = false;
+            resumeGame();
             prepareNext();
         });
     };
@@ -154,9 +304,16 @@
             var owned = ((res && res.purchases) || []).some(function(t) {
                 return t.productIdentifier === CFG.removeAdsProductId;
             });
-            if (owned) setAdsRemoved();
+            if (owned) {
+                setAdsRemoved("remove_ads owned on this Google account");
+            } else if (adsRemoved) {
+                clearAdsRemoved("Play no longer reports remove_ads as owned");
+            } else {
+                adDebug("Play purchases checked: remove-ads not owned");
+            }
         }).catch(function(e) {
             console.warn("getPurchases failed:", e && e.message);
+            adDebug("purchase check failed: " + ((e && e.message) || e));
         });
     }
 
@@ -169,12 +326,12 @@
             productIdentifier: CFG.removeAdsProductId,
             productType: "inapp"
         }).then(function() {
-            setAdsRemoved();
+            setAdsRemoved("just purchased");
             alert("Ads removed. Thank you for the support!");
         }).catch(function(e) {
             var msg = (e && e.message) || String(e);
             if (/already|owned/i.test(msg)) {
-                setAdsRemoved();
+                setAdsRemoved("already owned");
                 alert("Purchase restored - ads removed!");
             } else if (!/cancel/i.test(msg)) {
                 alert("Purchase failed: " + msg);
@@ -288,6 +445,16 @@
                 console.warn("Menu patch failed:", e && e.message);
             }
         }, 10);
+    }
+
+    if (CFG.testAds) {
+        window.__adsDebug = {
+            reset: function() {
+                adsRemoved = true; // so clearAdsRemoved() does the full reset
+                clearAdsRemoved("debug reset");
+            },
+            break: function() { window.showAdBreak(); }
+        };
     }
 
     function start() {

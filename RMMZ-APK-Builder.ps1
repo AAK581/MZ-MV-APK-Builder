@@ -644,6 +644,31 @@ __PLAY_DEPS__    "@capacitor/android": "^8.0.0",
     # MZ loads everything through js/main.js. Both survive this patching.
     $indexPath = Join-Path $wwwDir "index.html"
     $ih = Get-Content $indexPath -Raw
+
+    # Web-portal ad SDKs belong to the browser export on the portal, not to
+    # the app: left in, Game Monetize's loader shows the portal's ads over
+    # the game on launch and at every sdk.showBanner() call, on the itch
+    # build as much as the Play one, and on Play it sits on top of the
+    # native AdMob interstitial. Drop every <script> element that loads or
+    # configures one. Events that call sdk.showBanner() keep working:
+    # monetization.js provides that object and routes it to the native
+    # interstitial (Play), or a guarded no-op (itch).
+    $webAdSdks = @("gamemonetize")
+    $scriptRx = New-Object System.Text.RegularExpressions.Regex(
+        '[ \t]*<script\b[^>]*>[\s\S]*?</script>[ \t]*\r?\n?',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    foreach ($sdkName in $webAdSdks) {
+        $stripped = 0
+        foreach ($m in @($scriptRx.Matches($ih))) {
+            if ($m.Value -match ('(?i)' + [regex]::Escape($sdkName))) {
+                $ih = $ih.Replace($m.Value, "")
+                $stripped++
+            }
+        }
+        if ($stripped -gt 0) {
+            Write-Log "   removed $stripped $sdkName <script> block(s) from index.html (portal ads stay on the portal)"
+        }
+    }
     $viewport = '<meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">'
     if ($ih -match '(?i)<meta\s+name="viewport"') {
         $ih = Edit-Once $ih '<meta\s+name="viewport"[^>]*>' $viewport

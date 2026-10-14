@@ -140,11 +140,15 @@
         "  max-width: 340px; max-height: 340px;",
         "  z-index: 20; touch-action: none; opacity: {{OPACITY}};",
         "}",
-        ".tc-arm {",
-        "  position: absolute; background: {{BTN_COLOR}}; border-radius: 2.2vmin;",
+        /* The plus is one SVG path so its outline is a single continuous
+           stroke (two overlapping rounded arms would show their borders
+           crossing in the middle, or notch at the inner corners). The stroke
+           is 2 CSS px whatever the pad size, matching the buttons' border. */
+        ".tc-plus { display: block; width: 100%; height: 100%; overflow: visible; pointer-events: none; }",
+        ".tc-plus path {",
+        "  fill: {{BTN_COLOR}}; stroke: rgba(255, 255, 255, 0.35);",
+        "  stroke-width: 2px; stroke-linejoin: round; vector-effect: non-scaling-stroke;",
         "}",
-        ".tc-arm.h { left: 0; top: 33.5%; width: 100%; height: 33%; }",
-        ".tc-arm.v { top: 0; left: 33.5%; height: 100%; width: 33%; }",
         "#tc-buttons {",
         "  position: fixed; right: 3vmin; bottom: 8vmin; z-index: 20;",
         "  display: grid; grid-template-columns: repeat(2, calc(16vmin * {{SCALE}}));",
@@ -333,12 +337,18 @@
 
         var pad = document.createElement("div");
         pad.id = "tc-dpad";
-        var armH = document.createElement("div");
-        armH.className = "tc-arm h";
-        var armV = document.createElement("div");
-        armV.className = "tc-arm v";
-        pad.appendChild(armH);
-        pad.appendChild(armV);
+        // Plus with 33%-wide arms and rounded outer corners (radius 5 of 100).
+        var SVG_NS = "http://www.w3.org/2000/svg";
+        var plus = document.createElementNS(SVG_NS, "svg");
+        plus.setAttribute("class", "tc-plus");
+        plus.setAttribute("viewBox", "0 0 100 100");
+        var plusPath = document.createElementNS(SVG_NS, "path");
+        plusPath.setAttribute("d",
+            "M38.5 0H61.5A5 5 0 0 1 66.5 5V33.5H95A5 5 0 0 1 100 38.5V61.5" +
+            "A5 5 0 0 1 95 66.5H66.5V95A5 5 0 0 1 61.5 100H38.5A5 5 0 0 1 33.5 95" +
+            "V66.5H5A5 5 0 0 1 0 61.5V38.5A5 5 0 0 1 5 33.5H33.5V5A5 5 0 0 1 38.5 0Z");
+        plus.appendChild(plusPath);
+        pad.appendChild(plus);
         bindDpad(pad);
         root.appendChild(pad);
 

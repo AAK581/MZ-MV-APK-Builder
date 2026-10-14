@@ -46,6 +46,11 @@ Settings and version numbering are remembered per game: rebuilding after a
 game update automatically increments the internal version so players can
 install the new APK over the old one without losing saves.
 
+If the export was made for a web portal, its ad SDK is removed from the app
+automatically (currently Game Monetize). Events that call
+`window.sdk.showBanner()` at ad breaks keep working: in a Google Play build
+that call shows the native AdMob interstitial, elsewhere it does nothing.
+
 ## Signing (read this once)
 
 Android refuses unsigned apps, so a private signing key is created
