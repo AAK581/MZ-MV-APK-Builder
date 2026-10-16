@@ -28,10 +28,19 @@
  *                           screen button; also callable from the console.
  *
  * Ownership of the remove-ads product is re-checked against Google Play on
- * every launch (getPurchases), with localStorage as the offline cache. When
- * Play answers and the product is NOT owned any more (refunded or revoked
- * order), the cache is dropped and ads come back; when Play cannot be
- * reached the cache stands, so a paying player offline stays ad-free.
+ * every launch (getPurchases) and whenever the app returns to the
+ * foreground, with localStorage as the offline cache. When Play answers and
+ * the product is NOT owned any more (refunded or revoked order), the cache
+ * is dropped and ads come back; when Play cannot be reached the check is
+ * retried with backoff and the cache stands meanwhile, so a paying player
+ * offline stays ad-free.
+ *
+ * Every call into the billing plugin goes through one queue (see billing()):
+ * the plugin keeps a single Play connection and each call begins by closing
+ * the one before it, so two overlapping calls - e.g. the ownership check and
+ * the price lookup at startup - race, and the loser comes back as
+ * "disconnected". A player who owns remove-ads then saw ads whenever the
+ * ownership check lost that race.
  *
  * TEST-ads builds also expose window.__adsDebug = { reset(), break() } so
  * the ad pipeline can be driven from a DevTools console: reset() forgets
@@ -297,10 +306,58 @@
         });
     };
 
-    // - remove-ads purchase --------
-    function checkOwned() {
-        if (!Purchases) return;
-        Purchases.getPurchases({ productType: "inapp" }).then(function(res) {
+    // - one billing call at a time --------
+    // @capgo/native-purchases holds a single BillingClient and every call
+    // (getPurchases, getProduct, purchaseProduct) starts by closing whatever
+    // connection the previous call still has in flight. Calls therefore must
+    // never overlap: each one waits for the previous to settle. A per-call
+    // timeout keeps a call that never settles from blocking the queue (and
+    // the Remove Ads button) for good.
+    var QUERY_TIMEOUT_MS = 20000;
+    var PURCHASE_TIMEOUT_MS = 10 * 60 * 1000; // the player may sit on the Play sheet
+    var billingQueue = Promise.resolve();
+    function noop() {}
+    function billing(task, timeoutMs) {
+        var run = billingQueue.then(function() {
+            return new Promise(function(resolve, reject) {
+                var settled = false;
+                var timer = setTimeout(function() {
+                    if (settled) return;
+                    settled = true;
+                    reject(new Error("billing call timed out after " + (timeoutMs / 1000) + "s"));
+                }, timeoutMs);
+                Promise.resolve().then(task).then(function(v) {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve(v);
+                }, function(e) {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    reject(e);
+                });
+            });
+        });
+        billingQueue = run.then(noop, noop);
+        return run;
+    }
+
+    // - remove-ads ownership --------
+    // Resolves (never rejects) once Play has answered or the attempt failed;
+    // a failed attempt schedules a retry. Concurrent callers share one check.
+    var OWNED_RETRY_MS = [3000, 10000, 30000];
+    var ownedCheck = null;
+    var lastOwnedCheckAt = 0;
+    function checkOwned(attempt) {
+        if (!Purchases) return Promise.resolve();
+        if (ownedCheck) return ownedCheck;
+        attempt = attempt || 0;
+        lastOwnedCheckAt = Date.now();
+        ownedCheck = billing(function() {
+            return Purchases.getPurchases({ productType: "inapp" });
+        }, QUERY_TIMEOUT_MS).then(function(res) {
+            ownedCheck = null;
             var owned = ((res && res.purchases) || []).some(function(t) {
                 return t.productIdentifier === CFG.removeAdsProductId;
             });
@@ -312,30 +369,57 @@
                 adDebug("Play purchases checked: remove-ads not owned");
             }
         }).catch(function(e) {
+            ownedCheck = null;
             console.warn("getPurchases failed:", e && e.message);
             adDebug("purchase check failed: " + ((e && e.message) || e));
+            if (attempt < OWNED_RETRY_MS.length) {
+                adDebug("retrying purchase check in " + (OWNED_RETRY_MS[attempt] / 1000) + "s");
+                setTimeout(function() { checkOwned(attempt + 1); }, OWNED_RETRY_MS[attempt]);
+            }
         });
+        return ownedCheck;
     }
+
+    // Re-check when the app comes back to the foreground: the player may
+    // have bought, restored or been refunded outside this session. Throttled
+    // so the ad activity flipping visibility does not spam Play.
+    document.addEventListener("visibilitychange", function() {
+        if (document.visibilityState !== "visible") return;
+        if (Date.now() - lastOwnedCheckAt < 15000) return;
+        checkOwned();
+    });
 
     function buyRemoveAds() {
         if (!Purchases) {
             alert("Billing is not available on this device.");
             return;
         }
-        Purchases.purchaseProduct({
-            productIdentifier: CFG.removeAdsProductId,
-            productType: "inapp"
-        }).then(function() {
+        billing(function() {
+            return Purchases.purchaseProduct({
+                productIdentifier: CFG.removeAdsProductId,
+                productType: "inapp"
+            });
+        }, PURCHASE_TIMEOUT_MS).then(function() {
             setAdsRemoved("just purchased");
             alert("Ads removed. Thank you for the support!");
         }).catch(function(e) {
             var msg = (e && e.message) || String(e);
-            if (/already|owned/i.test(msg)) {
+            // Capacitor passes the plugin's reject code separately; for an
+            // owned product the plugin says "Purchase is not purchased" with
+            // code ITEM_ALREADY_OWNED, so the message alone is not enough.
+            var code = String((e && e.code) || "");
+            if (/ITEM_ALREADY_OWNED/i.test(code) || /already|owned/i.test(msg)) {
                 setAdsRemoved("already owned");
                 alert("Purchase restored - ads removed!");
-            } else if (!/cancel/i.test(msg)) {
-                alert("Purchase failed: " + msg);
+                return;
             }
+            if (/USER_CANCELED/i.test(code) || /cancel/i.test(msg)) return;
+            // Anything else: Play's purchase list is the truth - ask it
+            // before telling the player the purchase failed.
+            adDebug("purchase failed (" + (code || "no code") + "): " + msg);
+            checkOwned().then(function() {
+                if (!adsRemoved) alert("Purchase failed: " + msg);
+            });
         });
     }
     window.buyRemoveAds = buyRemoveAds;
@@ -387,10 +471,12 @@
     // real display price instead of showing the hardcoded USD label.
     function fetchPrice() {
         if (!Purchases || !Purchases.getProduct) return;
-        Purchases.getProduct({
-            productIdentifier: CFG.removeAdsProductId,
-            productType: "inapp"
-        }).then(function(res) {
+        billing(function() {
+            return Purchases.getProduct({
+                productIdentifier: CFG.removeAdsProductId,
+                productType: "inapp"
+            });
+        }, QUERY_TIMEOUT_MS).then(function(res) {
             var p = res && (res.product || res);
             if (p && p.priceString) {
                 priceLabel = p.priceString;
@@ -459,10 +545,11 @@
 
     function start() {
         initAds();
-        checkOwned();
         buildButton();
-        fetchPrice();
         patchMenu();
+        // Ownership first - it decides whether ads load at all - then the
+        // price. The queue would serialize them anyway; this fixes the order.
+        checkOwned().then(fetchPrice);
     }
 
     if (document.readyState === "loading") {
