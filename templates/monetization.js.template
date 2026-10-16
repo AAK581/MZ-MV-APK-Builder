@@ -10,9 +10,11 @@
  *                           No-op if ads were removed, an ad isn't loaded
  *                           yet (e.g. offline), ads are disabled, or the
  *                           last ad was under minAdIntervalSec ago (3 min
- *                           by default). Also fired automatically whenever
- *                           the title screen is re-entered ("To Title",
- *                           game over, the ending) - never on app start.
+ *                           by default).
+ *                           Returning to the title screen ("To Title",
+ *                           game over, the ending) is its own ad break
+ *                           that ignores the cooldown: every return shows
+ *                           an ad if one is loaded. Never on app start.
  *                           Games exported for the Game Monetize portal
  *                           call `window.sdk.showBanner()` at their ad
  *                           breaks instead; inside the app that object is
@@ -33,7 +35,9 @@
  *
  * Ownership of the remove-ads product is checked against Google Play before
  * AdMob is even started, so a player who owns remove-ads never causes an ad
- * request; it is re-checked whenever the app returns to the foreground, with localStorage as the offline cache. When Play answers and
+ * request; it is re-checked whenever the app returns to the foreground
+ * (Capacitor's App "resume" event - the WebView's visibilitychange does not
+ * fire around the ad or Play activities on Android), with localStorage as the offline cache. When Play answers and
  * the product is NOT owned any more (refunded or revoked order), the cache
  * is dropped and ads come back; when Play cannot be reached the check is
  * retried with backoff and the cache stands meanwhile, so a paying player
@@ -291,11 +295,14 @@
             });
     }
 
-    window.showAdBreak = function() {
+    // opts.force: ignore the frequency cap (title-screen returns). Everything
+    // else still applies - no ad without a loaded interstitial.
+    window.showAdBreak = function(opts) {
+        var force = !!(opts && opts.force);
         if (adsRemoved) { adDebug("ad break skipped: ads removed"); return; }
         if (adShowing) { adDebug("ad break skipped: an ad is already showing"); return; }
         if (!AdMob) { adDebug("ad break skipped: AdMob plugin missing"); return; }
-        if (Date.now() - lastAdAt < MIN_GAP_MS) {
+        if (!force && Date.now() - lastAdAt < MIN_GAP_MS) {
             adDebug("ad break skipped: last ad " + Math.round((Date.now() - lastAdAt) / 1000) +
                     "s ago, minimum gap " + (MIN_GAP_MS / 1000) + "s");
             return;
@@ -404,13 +411,21 @@
     }
 
     // Re-check when the app comes back to the foreground: the player may
-    // have bought, restored or been refunded outside this session. Throttled
-    // so the ad activity flipping visibility does not spam Play.
-    document.addEventListener("visibilitychange", function() {
-        if (document.visibilityState !== "visible") return;
+    // have bought, restored or been refunded outside this session (or in
+    // the Play sheet that just closed). Capacitor's App plugin is the
+    // reliable signal on Android - the WebView's visibilitychange does not
+    // fire when the ad or Play activity covers and uncovers the game.
+    // Throttled so a quick flip does not spam Play.
+    function onForeground() {
         if (Date.now() - lastOwnedCheckAt < 15000) return;
         checkOwned();
+    }
+    document.addEventListener("visibilitychange", function() {
+        if (document.visibilityState === "visible") onForeground();
     });
+    if (Plugins.App && typeof Plugins.App.addListener === "function") {
+        Plugins.App.addListener("resume", onForeground);
+    }
 
     function buyRemoveAds() {
         if (!Purchases) {
@@ -558,8 +573,8 @@
 
     // ---- ad break on returning to the title screen -----------------------
     // The first title screen is app start - no ads on launch (AdMob policy).
-    // Every later one ("To Title" from the menu, game over, the ending) is a
-    // natural break and gets an ad, under the same cooldown as any other.
+    // Every later one ("To Title" from the menu, game over, the ending) shows
+    // an ad regardless of the cooldown, as long as one is loaded.
     function patchTitle() {
         var tries = 0;
         var timer = setInterval(function() {
@@ -572,8 +587,8 @@
                 Scene_Title.prototype.start = function() {
                     startTitle.call(this);
                     if (++titleVisits > 1) {
-                        adDebug("back on the title screen - ad break");
-                        window.showAdBreak();
+                        adDebug("back on the title screen - ad break (no cooldown)");
+                        window.showAdBreak({ force: true });
                     }
                 };
             } catch (e) {
