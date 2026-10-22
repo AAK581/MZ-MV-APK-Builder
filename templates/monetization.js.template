@@ -21,6 +21,13 @@
  *                           provided here and routes to showAdBreak(), so
  *                           one export serves both the portal and Play.
  *
+ *   THE FIRST INTERSTITIAL IS REQUESTED ON THE FIRST MAP SCENE, not at app
+ *   start. A launch that ends on the title screen (a look, a tester, a
+ *   wrong tap) then costs no ad request, which kept the account's show rate
+ *   near one impression in four; a player who reaches the map meant to play,
+ *   and the ad is loaded seconds later - in time even for a save made just
+ *   before a day's end. After each ad the next one is loaded at once.
+ *
  *   While the native interstitial is up the game loop is stopped and the
  *   audio context suspended, then both resume when it is dismissed - the
  *   event that triggered the break continues exactly where it left off.
@@ -241,12 +248,15 @@
         });
     }
 
-    // Starts AdMob and loads the first interstitial. Only ever runs once Play
-    // has been asked about remove-ads (see start()) and only while ads are
-    // on: a paying player never starts the SDK, so never causes an ad
-    // request. Safe to call again (ads restored after a refund): the SDK is
-    // initialized once, later calls just load the next ad.
+    // Starts AdMob. Only ever runs once Play has been asked about remove-ads
+    // (see start()) and only while ads are on: a paying player never starts
+    // the SDK, so never causes an ad request. The first interstitial is NOT
+    // loaded here but on the first map scene (see patchMap): until then no
+    // request is made. Safe to call again (ads restored after a refund): the
+    // SDK is initialized once, and a later call loads the next ad if the
+    // player is already past the title screen.
     var adsStarted = false;
+    var mapReached = false;
     function initAds() {
         if (!AdMob) {
             console.warn("AdMob plugin not available");
@@ -257,7 +267,7 @@
             return;
         }
         if (adsStarted) {
-            prepareNext();
+            if (mapReached) prepareNext();
             return;
         }
         adsStarted = true;
@@ -286,8 +296,10 @@
         });
         AdMob.initialize({ initializeForTesting: !!CFG.testAds })
             .then(function() {
-                adDebug("AdMob initialized");
-                prepareNext();
+                adDebug("AdMob initialized - first ad loads on the first map scene");
+                // Ads restored (or Play slow to answer) with the player already
+                // in the game: load now, there is no map entry still to come.
+                if (mapReached) prepareNext();
             })
             .catch(function(e) {
                 console.warn("AdMob init failed:", e && e.message);
@@ -571,6 +583,34 @@
         }, 10);
     }
 
+    // ---- first ad request on the first map scene -------------------------
+    // The title screen is where launches that never become sessions end, so
+    // nothing is requested there. Scene_Map starts for New Game and Continue
+    // alike; prepareNext's own guards (adReady, adLoading, adsRemoved) make
+    // every later map start a no-op, and initAds' adsStarted/mapReached make
+    // the order of "SDK ready" and "map reached" irrelevant.
+    function patchMap() {
+        var tries = 0;
+        var timer = setInterval(function() {
+            if (++tries > 1500) { clearInterval(timer); return; }
+            if (!window.Scene_Map) { return; }
+            clearInterval(timer);
+            try {
+                var startMap = Scene_Map.prototype.start;
+                Scene_Map.prototype.start = function() {
+                    startMap.call(this);
+                    if (!mapReached) {
+                        mapReached = true;
+                        adDebug("first map scene - requesting the first interstitial");
+                    }
+                    if (adsStarted) prepareNext();
+                };
+            } catch (e) {
+                console.warn("Map patch failed:", e && e.message);
+            }
+        }, 10);
+    }
+
     // ---- ad break on returning to the title screen -----------------------
     // The first title screen is app start - no ads on launch (AdMob policy).
     // Every later one ("To Title" from the menu, game over, the ending) shows
@@ -614,9 +654,10 @@
         buildButton();
         patchMenu();
         patchTitle();
-        // Ask Play who owns what before anything else: AdMob starts (and
-        // requests its first ad) only once Play has answered and the player
-        // does not own remove-ads. If the check fails it retries; ads stay
+        patchMap();
+        // Ask Play who owns what before anything else: AdMob starts only
+        // once Play has answered and the player does not own remove-ads; the
+        // first ad is requested on the first map scene (patchMap). If the check fails it retries; ads stay
         // on meanwhile unless the device remembers a purchase.
         checkOwned().then(function() {
             initAds();
