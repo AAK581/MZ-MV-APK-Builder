@@ -218,11 +218,27 @@
 
     // - interstitial ads ---------
     var adLoading = false;
+    // True from the show call until the ad is dismissed (or failed to show).
+    // The native plugin keeps ONE loaded interstitial per ad unit and drops
+    // that slot when the ad on screen is dismissed - so an ad loaded while
+    // another is showing is deleted on dismissal while this script would
+    // still count it as ready, and the next break has nothing to show. No
+    // load starts while an ad is up; the dismissed handler loads the next.
+    var showPending = false;
+    var retryTimer = null;
     function prepareNext() {
         if (adsRemoved || !AdMob) return;
         // One load at a time, and none while an ad is already waiting:
         // several paths (init, ads restored, a skipped break) may ask.
         if (adReady || adLoading) return;
+        if (showPending || adShowing) {
+            adDebug("load deferred: an ad is on screen");
+            return;
+        }
+        if (retryTimer) {
+            clearTimeout(retryTimer);
+            retryTimer = null;
+        }
         adLoading = true;
         adDebug("loading interstitial" + (CFG.testAds ? " (test unit)" : "") + "...");
         AdMob.prepareInterstitial({
@@ -243,7 +259,11 @@
             // ad-blocking DNS). Retry with backoff so a later ad break still
             // has an ad ready.
             if (++prepareAttempts <= 5) {
-                setTimeout(prepareNext, 30000 * prepareAttempts);
+                if (retryTimer) clearTimeout(retryTimer);
+                retryTimer = setTimeout(function() {
+                    retryTimer = null;
+                    prepareNext();
+                }, 30000 * prepareAttempts);
             }
         });
     }
@@ -284,12 +304,16 @@
         });
         AdMob.addListener("interstitialAdDismissed", function() {
             adShowing = false;
+            showPending = false;
+            adReady = false; // the plugin dropped its loaded ad on dismissal
             adDebug("ad dismissed - game resumed");
             resumeGame();
             prepareNext();
         });
         AdMob.addListener("interstitialAdFailedToShow", function(e) {
             adShowing = false;
+            showPending = false;
+            adReady = false;
             adDebug("show failed: " + ((e && e.message) || JSON.stringify(e)));
             resumeGame();
             prepareNext();
@@ -326,6 +350,7 @@
         }
         adDebug("ad break: showing interstitial");
         adReady = false;
+        showPending = true;
         lastAdAt = Date.now();
         // Freeze right now, before the ad activity opens, so the event that
         // called us does not run on for the frames in between.
@@ -335,6 +360,7 @@
             if (!adShowing) {
                 console.warn("Interstitial never reported as shown; resuming game");
                 adDebug("ad never appeared within " + (SHOW_TIMEOUT_MS / 1000) + "s - game resumed");
+                showPending = false;
                 resumeGame();
                 prepareNext();
             }
@@ -343,6 +369,11 @@
             console.warn("Interstitial failed to show:", e && e.message);
             adDebug("show rejected: " + ((e && e.message) || e));
             adShowing = false;
+            showPending = false;
+            if (pauseWatchdog) {
+                clearTimeout(pauseWatchdog);
+                pauseWatchdog = null;
+            }
             resumeGame();
             prepareNext();
         });
