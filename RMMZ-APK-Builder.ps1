@@ -553,6 +553,28 @@ function Build-Apk([hashtable]$cfg) {
     # MZ loads everything through js/main.js. Both survive this patching.
     $indexPath = Join-Path $wwwDir "index.html"
     $ih = Get-Content $indexPath -Raw
+
+    # Web-portal ad SDKs belong to the browser export on the portal, not to
+    # the app: left in, Game Monetize's loader shows the portal's ads over
+    # the game on launch and at every sdk.showBanner() call. Drop every
+    # <script> element that loads or configures one. Events that call
+    # `window.sdk && window.sdk.showBanner && ...` then do nothing.
+    $webAdSdks = @("gamemonetize")
+    $scriptRx = New-Object System.Text.RegularExpressions.Regex(
+        '[ \t]*<script\b[^>]*>[\s\S]*?</script>[ \t]*\r?\n?',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    foreach ($sdkName in $webAdSdks) {
+        $stripped = 0
+        foreach ($m in @($scriptRx.Matches($ih))) {
+            if ($m.Value -match ('(?i)' + [regex]::Escape($sdkName))) {
+                $ih = $ih.Replace($m.Value, "")
+                $stripped++
+            }
+        }
+        if ($stripped -gt 0) {
+            Write-Log "   removed $stripped $sdkName <script> block(s) from index.html (portal ads stay on the portal)"
+        }
+    }
     $viewport = '<meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">'
     if ($ih -match '(?i)<meta\s+name="viewport"') {
         $ih = Edit-Once $ih '<meta\s+name="viewport"[^>]*>' $viewport
@@ -1116,7 +1138,7 @@ $btnHelp.Add_Click({
         "WHAT THIS APP DOES",
         "Wraps an RPG Maker MV or MZ web export in a native Android app and builds an installable APK: fullscreen landscape, on-screen touch controls (d-pad, Z / X / SHIFT and an optional extra key button), Android back button opens the game menu, mobile GPU rendering fixes, your background art around the game window, and an optional itch-style frame. MV desktop exports (with the game inside a www folder) are detected automatically.",
         "",
-        "The touch controls start hidden behind a small round '+' button at the bottom center (like the Maldives player). Tapping it shows them and turns it into a minus; the player's choice is remembered between sessions.",
+        "The touch controls are shown by default. A small round button at the bottom center hides them (it turns into a '+') and brings them back; the player's choice is remembered between sessions.",
         "",
         "HOW TO USE",
         "1. Pick the game export folder (the one with index.html). The title fills in automatically; the icon and all options are remembered per game.",
