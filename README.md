@@ -11,8 +11,8 @@ Made by [Doma](https://linktr.ee/aak581).
 
 - Fullscreen, landscape-locked, screen stays awake, back button opens the game menu
 - On-screen touch controls: d-pad, Z / X / SHIFT, plus an optional extra key button
-  - Controls start hidden behind a small round **+** button (Maldives-style);
-    the player's choice is remembered
+  - Controls are shown by default; a small round button at the bottom center
+    hides them and brings them back, and the player's choice is remembered
 - Fixes for the classic RPG Maker on Android rendering bugs (tile seams,
   garbled fine patterns) via a shader-precision patch
 - Your own background art behind the game, an optional itch-style frame with
@@ -46,6 +46,12 @@ Settings and version numbering are remembered per game: rebuilding after a
 game update automatically increments the internal version so players can
 install the new APK over the old one without losing saves.
 
+If the export was made for a web portal, its ad SDK is removed from the app
+automatically (currently Game Monetize), so the portal's ads don't show
+inside the APK. Events that call `window.sdk.showBanner()` at ad breaks
+simply do nothing in the app, as long as the call is guarded the usual way
+(`window.sdk && window.sdk.showBanner && window.sdk.showBanner();`).
+
 ## Signing (read this once)
 
 Android refuses unsigned apps, so a private signing key is created
@@ -53,9 +59,18 @@ automatically in your `Documents\android-keys` folder and reused for all your
 games. **Back that folder up** — updates must be signed with the same key.
 No Google account is involved.
 
-These APKs are for itch.io and sideloading. Publishing on Google Play is a
-different pipeline (AAB bundle, store listing, content rating, etc.) that this
-tool intentionally does not do.
+These APKs are for itch.io and sideloading. This branch never adds ads,
+purchases or Google Play files.
+
+## Google Play
+
+Publishing on Google Play needs an `.aab` bundle, ads or purchases set up in
+AdMob and Play Console, and Google's EU consent form. That version of the
+builder lives on the
+[`play-mode` branch](https://github.com/AAK581/MZ-MV-APK-Builder/tree/play-mode),
+with a full step-by-step guide in its README. It still makes the same clean
+itch APK alongside the Play files. This `main` branch stays the simple
+itch/sideload builder.
 
 ## Command line
 

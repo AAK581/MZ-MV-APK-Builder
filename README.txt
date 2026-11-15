@@ -1,7 +1,8 @@
 RMMZ APK Builder
 ================
 Turns an RPG Maker MV or MZ web export into an installable Android APK
-(for itch.io / sideloading - not a Play Store pipeline).
+(for itch.io / sideloading). For Google Play builds use the
+"play-mode" branch: https://github.com/AAK581/MZ-MV-APK-Builder/tree/play-mode
 Made by Doma - https://linktr.ee/aak581
 Special thanks to AbraGeroni - https://linktr.ee/AbraGeroni - for testing
 
