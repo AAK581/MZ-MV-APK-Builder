@@ -57,15 +57,28 @@
  * "disconnected". A player who owns remove-ads then saw ads whenever the
  * ownership check lost that race.
  *
- * TEST-ads builds also expose window.__adsDebug = { reset(), break() } so
- * the ad pipeline can be driven from a DevTools console: reset() forgets
- * the remove-ads entitlement for this session, break() is an ad break.
+ * Consent (EEA, UK, Switzerland and wherever else the account's AdMob message
+ * applies) comes between that ownership check and AdMob: Google's consent form
+ * shows if it is required, and AdMob starts only once the consent library says
+ * ads can be requested. A player who owns remove-ads is never asked. The form
+ * is never opened over gameplay, and a failed check never holds the game up:
+ * see gatherConsent(). The form itself is configured in the AdMob console
+ * (Privacy & messaging); without a published message there is nothing to show.
+ *
+ * TEST-ads builds also expose window.__adsDebug = { reset(), break(),
+ * consentTest(hash), consentOff() } so the ad pipeline can be driven from a
+ * DevTools console: reset() forgets the remove-ads entitlement for this
+ * session, break() is an ad break, consentTest() makes this device act as if
+ * it were in the EEA and forgets its answer from the next launch on (hash =
+ * the test device id the consent library prints to logcat), consentOff() ends
+ * that. Release builds never read that setting.
  */
 (function() {
     "use strict";
 
     var CFG = window.MOBILE_CONFIG || {};
     var STORAGE_KEY = "tc_ads_removed";
+    var CONSENT_DEBUG_KEY = "tc_consent_debug";
 
     // Always defined so game event scripts can call it unconditionally.
     window.showAdBreak = function() {};
@@ -103,6 +116,7 @@
     // the game hits two ad breaks back-to-back (e.g. quick scene skips).
     var MIN_GAP_MS = (CFG.minAdIntervalSec || 180) * 1000;
     var removeAdsBtn = null;
+    var privacyBtn = null;
     var priceLabel = CFG.removeAdsPriceLabel || "";
 
     // - test-build status line -
@@ -147,7 +161,7 @@
             removeAdsBtn.style.display = "";
         }
         refreshMenuCommands();
-        initAds();
+        startAds();
     }
 
     // Drop the "Remove Ads" entry from an open menu once ads are gone.
@@ -227,7 +241,7 @@
     var showPending = false;
     var retryTimer = null;
     function prepareNext() {
-        if (adsRemoved || !AdMob) return;
+        if (adsRemoved || !AdMob || !consentOk) return;
         // One load at a time, and none while an ad is already waiting:
         // several paths (init, ads restored, a skipped break) may ask.
         if (adReady || adLoading) return;
@@ -268,8 +282,138 @@
         });
     }
 
+    // - consent -----------------
+    // Runs after Play has been asked about remove-ads and before AdMob starts.
+    // consentOk is the consent library's own canRequestAds answer, and nothing
+    // loads an ad without it. A failed check is treated as "not yet": the game
+    // carries on with no ad requests and the check is tried again.
+    //
+    // The form is a dialog over the running game, so it only ever opens before
+    // play starts (boot and title screens). If one turns out to be required
+    // later (the first check failed offline, then the signal came back), it
+    // waits for the next title screen or launch. Until then a player whose
+    // earlier answer still stands keeps canRequestAds = true and sees ads.
+    //
+    // Nothing is frozen while the form is up: a form that never loads must
+    // not be able to hang the game. It can only delay the ads.
+    var CONSENT_TIMEOUT_MS = 20000;
+    var consentOk = false;
+    var consentSettled = false; // answered, and no form still waiting
+    var consentBusy = null;
+    var consentAttempts = 0;
+    var consentRetryTimer = null;
+    var playAsked = false; // the first remove-ads check has finished
+    var privacyRequired = false;
+
+    function consentOptions() {
+        if (!CFG.testAds) return {};
+        var hash = null;
+        try { hash = localStorage.getItem(CONSENT_DEBUG_KEY); } catch (e) { /* ignore */ }
+        if (!hash) return {};
+        adDebug("consent test mode: acting as EEA");
+        return { debugGeography: 1, testDeviceIdentifiers: [hash] };
+    }
+
+    function consentFormSafeNow() {
+        if (adShowing || showPending) return false;
+        if (!window.SceneManager || !window.Scene_Title) return true; // still booting
+        var scene = SceneManager._scene;
+        return !scene || scene instanceof Scene_Title ||
+               (!!window.Scene_Boot && scene instanceof Scene_Boot);
+    }
+
+    function applyConsent(info) {
+        consentOk = !!(info && info.canRequestAds);
+        var wasRequired = privacyRequired;
+        privacyRequired = !!(info && info.privacyOptionsRequirementStatus === "REQUIRED");
+        adDebug("consent: " + (info && info.status) + ", can request ads: " + consentOk +
+                ", privacy options " + (privacyRequired ? "required" : "not required"));
+        if (privacyRequired !== wasRequired) refreshMenuCommands();
+        if (consentOk) initAds();
+    }
+
+    function requestConsentInfo() {
+        return new Promise(function(resolve, reject) {
+            var timer = setTimeout(function() {
+                reject(new Error("consent check timed out after " + (CONSENT_TIMEOUT_MS / 1000) + "s"));
+            }, CONSENT_TIMEOUT_MS);
+            AdMob.requestConsentInfo(consentOptions()).then(function(info) {
+                clearTimeout(timer);
+                resolve(info);
+            }, function(e) {
+                clearTimeout(timer);
+                reject(e);
+            });
+        });
+    }
+
+    function retryConsentLater() {
+        if (consentRetryTimer || ++consentAttempts > 5) return;
+        consentRetryTimer = setTimeout(function() {
+            consentRetryTimer = null;
+            startAds();
+        }, 30000 * consentAttempts);
+    }
+
+    // Resolves (never rejects) once this attempt is over. Concurrent callers
+    // share one attempt.
+    function gatherConsent() {
+        if (consentBusy) return consentBusy;
+        adDebug("checking consent...");
+        consentBusy = requestConsentInfo().then(function(info) {
+            if (info.status === "REQUIRED" && info.isConsentFormAvailable) {
+                if (consentFormSafeNow()) {
+                    adDebug("showing the consent form");
+                    return AdMob.showConsentForm();
+                }
+                adDebug("consent form waits for the next title screen");
+                consentSettled = false;
+                applyConsent(info);
+                return null;
+            }
+            return info;
+        }).then(function(info) {
+            consentBusy = null;
+            consentAttempts = 0;
+            if (info) {
+                consentSettled = true;
+                applyConsent(info);
+            }
+        }).catch(function(e) {
+            consentBusy = null;
+            console.warn("Consent check failed:", e && e.message);
+            adDebug("consent check failed: " + ((e && e.message) || e) + " - no ad requests for now");
+            retryConsentLater();
+        });
+        return consentBusy;
+    }
+
+    // The way into consent and AdMob for every path that wants ads on. Needs
+    // the first remove-ads answer, so a player who owns it is never asked.
+    function startAds() {
+        if (!playAsked || adsRemoved || !AdMob) return;
+        if (consentSettled) {
+            initAds();
+            return;
+        }
+        gatherConsent();
+    }
+
+    // Google requires a way back to the consent choice wherever the library
+    // says one is needed: a title-screen button and a menu command, both only
+    // shown then. A changed answer applies from the next ad request on.
+    function showPrivacyOptions() {
+        if (!AdMob) return;
+        AdMob.showPrivacyOptionsForm().catch(function(e) {
+            console.warn("Privacy options failed:", e && e.message);
+            adDebug("privacy options failed: " + ((e && e.message) || e));
+        }).then(function() {
+            return gatherConsent();
+        });
+    }
+
     // Starts AdMob. Only ever runs once Play has been asked about remove-ads
-    // (see start()) and only while ads are on: a paying player never starts
+    // (see start()), consent allows it (see gatherConsent) and ads are on: a paying player never starts
     // the SDK, so never causes an ad request. The first interstitial is NOT
     // loaded here but on the first map scene (see patchMap): until then no
     // request is made. Safe to call again (ads restored after a refund): the
@@ -284,6 +428,10 @@
         }
         if (adsRemoved) {
             adDebug("ads removed - AdMob not started, no ad requests");
+            return;
+        }
+        if (!consentOk) {
+            adDebug("no consent to request ads - AdMob not started");
             return;
         }
         if (adsStarted) {
@@ -462,6 +610,7 @@
     function onForeground() {
         if (Date.now() - lastOwnedCheckAt < 15000) return;
         checkOwned();
+        startAds();
     }
     document.addEventListener("visibilitychange", function() {
         if (document.visibilityState === "visible") onForeground();
@@ -505,6 +654,19 @@
     }
     window.buyRemoveAds = buyRemoveAds;
 
+    // The game's touch layer must never see a tap on these buttons.
+    function swallowTouches(el) {
+        ["touchstart", "touchmove", "touchend", "mousedown", "mouseup", "contextmenu"]
+            .forEach(function(t) {
+                el.addEventListener(t, function(e) {
+                    e.stopPropagation();
+                    if (e.cancelable && (t.indexOf("touch") === 0 || t === "contextmenu")) {
+                        e.preventDefault();
+                    }
+                }, { passive: false });
+            });
+    }
+
     // - title-screen "Remove Ads" button -------
     function buildButton() {
         var style = document.createElement("style");
@@ -515,6 +677,15 @@
             "  background: rgba(13, 71, 110, 0.9); color: #e8f2fa;" +
             "  border: 2px solid rgba(255, 255, 255, 0.35);" +
             "  font: bold 3.4vmin/1.2 sans-serif; display: none; touch-action: none;" +
+            "  -webkit-user-select: none; user-select: none;" +
+            "  -webkit-tap-highlight-color: transparent;" +
+            "}" +
+            "#tc-privacy {" +
+            "  position: fixed; right: 2.5vmin; top: 12.5vmin;" +
+            "  z-index: 21; padding: 1.4vmin 3vmin; border-radius: 4vmin;" +
+            "  background: rgba(13, 71, 110, 0.9); color: #e8f2fa;" +
+            "  border: 2px solid rgba(255, 255, 255, 0.35);" +
+            "  font: bold 2.6vmin/1.2 sans-serif; display: none; touch-action: none;" +
             "  -webkit-user-select: none; user-select: none;" +
             "  -webkit-tap-highlight-color: transparent;" +
             "}";
@@ -528,22 +699,26 @@
             e.stopPropagation();
             buyRemoveAds();
         });
-        ["touchstart", "touchmove", "touchend", "mousedown", "mouseup", "contextmenu"]
-            .forEach(function(t) {
-                removeAdsBtn.addEventListener(t, function(e) {
-                    e.stopPropagation();
-                    if (e.cancelable && (t.indexOf("touch") === 0 || t === "contextmenu")) {
-                        e.preventDefault();
-                    }
-                }, { passive: false });
-            });
+        swallowTouches(removeAdsBtn);
         document.body.appendChild(removeAdsBtn);
+
+        privacyBtn = document.createElement("div");
+        privacyBtn.id = "tc-privacy";
+        privacyBtn.textContent = "Privacy Options";
+        privacyBtn.addEventListener("pointerdown", function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            showPrivacyOptions();
+        });
+        swallowTouches(privacyBtn);
+        document.body.appendChild(privacyBtn);
 
         // Only show on the title screen, and only while ads are active.
         setInterval(function() {
             var onTitle = window.SceneManager && window.Scene_Title &&
                           SceneManager._scene instanceof Scene_Title;
             removeAdsBtn.style.display = (onTitle && !adsRemoved) ? "block" : "none";
+            privacyBtn.style.display = (onTitle && !adsRemoved && privacyRequired) ? "block" : "none";
         }, 400);
     }
 
@@ -587,12 +762,18 @@
                 Window_MenuCommand.prototype.makeCommandList = function() {
                     makeList.call(this);
                     if (adsRemoved) { return; }
+                    var added = 1;
                     this.addCommand("Remove Ads - " + priceLabel, "removeAds", true);
+                    if (privacyRequired) {
+                        this.addCommand("Privacy Options", "privacyOptions", true);
+                        added = 2;
+                    }
                     // Sit above "Game End" instead of dangling below it.
                     var list = this._list;
                     for (var i = 0; i < list.length; i++) {
                         if (list[i].symbol === "gameEnd") {
-                            list.splice(i, 0, list.pop());
+                            var ours = list.splice(list.length - added, added);
+                            Array.prototype.splice.apply(list, [i, 0].concat(ours));
                             break;
                         }
                     }
@@ -602,6 +783,13 @@
                     createCmd.call(this);
                     this._commandWindow.setHandler("removeAds", function() {
                         buyRemoveAds();
+                        var scene = SceneManager._scene;
+                        if (scene && scene._commandWindow) {
+                            scene._commandWindow.activate();
+                        }
+                    });
+                    this._commandWindow.setHandler("privacyOptions", function() {
+                        showPrivacyOptions();
                         var scene = SceneManager._scene;
                         if (scene && scene._commandWindow) {
                             scene._commandWindow.activate();
@@ -657,6 +845,8 @@
                 var startTitle = Scene_Title.prototype.start;
                 Scene_Title.prototype.start = function() {
                     startTitle.call(this);
+                    // A consent form that had to wait gets its turn here.
+                    startAds();
                     if (++titleVisits > 1) {
                         adDebug("back on the title screen - ad break (no cooldown)");
                         window.showAdBreak({ force: true });
@@ -674,7 +864,15 @@
                 adsRemoved = true; // so clearAdsRemoved() does the full reset
                 clearAdsRemoved("debug reset");
             },
-            break: function() { window.showAdBreak(); }
+            break: function() { window.showAdBreak(); },
+            consentTest: function(hash) {
+                try { localStorage.setItem(CONSENT_DEBUG_KEY, hash); } catch (e) { /* ignore */ }
+                return AdMob.resetConsentInfo();
+            },
+            consentOff: function() {
+                try { localStorage.removeItem(CONSENT_DEBUG_KEY); } catch (e) { /* ignore */ }
+                return AdMob.resetConsentInfo();
+            }
         };
     }
 
@@ -686,12 +884,14 @@
         patchMenu();
         patchTitle();
         patchMap();
-        // Ask Play who owns what before anything else: AdMob starts only
-        // once Play has answered and the player does not own remove-ads; the
-        // first ad is requested on the first map scene (patchMap). If the check fails it retries; ads stay
-        // on meanwhile unless the device remembers a purchase.
+        // Ask Play who owns what before anything else: consent is asked for and
+        // AdMob started only once Play has answered and the player does not own
+        // remove-ads; the first ad is requested on the first map scene
+        // (patchMap). If the check fails it retries; ads stay on meanwhile
+        // unless the device remembers a purchase.
         checkOwned().then(function() {
-            initAds();
+            playAsked = true;
+            startAds();
             fetchPrice();
         });
     }
