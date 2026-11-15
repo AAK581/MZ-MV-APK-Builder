@@ -10,14 +10,18 @@ ads, a "Remove Ads" purchase and the EU consent form, ready to upload to Play
 Console. That needs some setup in AdMob and Play Console first, so it has its
 own step-by-step guide: [Google Play builds](#google-play-builds).
 
+This is the **`play-mode` branch**. The
+[`main` branch](https://github.com/AAK581/MZ-MV-APK-Builder/tree/main) is the
+simpler itch-only builder with no ads, purchases or Play files.
+
 Made by [Doma](https://linktr.ee/aak581).
 
 ## What the built APKs include
 
 - Fullscreen, landscape-locked, screen stays awake, back button opens the game menu
 - On-screen touch controls: d-pad, Z / X / SHIFT, plus an optional extra key button
-  - Controls start hidden behind a small round **+** button (Maldives-style);
-    the player's choice is remembered
+  - Controls are shown by default; a small round button at the bottom center
+    hides them and brings them back, and the player's choice is remembered
 - Fixes for the classic RPG Maker on Android rendering bugs (tile seams,
   garbled fine patterns) via a shader-precision patch
 - Your own background art behind the game, an optional itch-style frame with

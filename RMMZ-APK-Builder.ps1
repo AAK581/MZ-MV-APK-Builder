@@ -1,9 +1,11 @@
 # =============================================================================
-#  RMMZ APK Builder - turns an RPG Maker MZ web export into a sideload-ready
-#  Android APK (for itch.io etc.). Not a Play Store pipeline: the APK is
-#  signed with a local key kept in the user's Documents\android-keys folder
-#  (Android refuses unsigned APKs entirely), and Play would require an AAB
-#  plus store setup anyway.
+#  RMMZ APK Builder (play-mode branch) - turns an RPG Maker MV/MZ web export
+#  into a sideload-ready Android APK for itch.io etc. and, in Google Play
+#  mode, also a Play .aab with AdMob ads, a remove-ads (or tip) purchase and
+#  Google's EU consent form, plus a test-ads APK. Everything is signed with
+#  a local key kept in the user's Documents\android-keys folder, which is
+#  also the Play upload key. The main branch is the itch-only builder.
+#  Setup for Play (AdMob, Play Console, consent message): README.md.
 #
 #  GUI:      double-click "Launch RMMZ APK Builder.bat"
 #  Headless: powershell -ExecutionPolicy Bypass -File RMMZ-APK-Builder.ps1 `
@@ -1017,7 +1019,7 @@ function New-Control([string]$type, [int]$x, [int]$y, [int]$w, [int]$h, [string]
 $header = New-Control "Panel" 0 0 1232 54 "" $form
 $lblTitle = New-Control "Label" 16 6 320 28 "RMMZ APK Builder" $header
 $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
-$lblSub = New-Control "Label" 18 34 640 16 "RPG Maker MV / MZ web export  >  Android APK  (itch.io / sideloading)" $header
+$lblSub = New-Control "Label" 18 34 640 16 "RPG Maker MV / MZ web export  >  Android APK (itch.io)  +  Google Play AAB" $header
 $lblSub.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $btnHelp = New-Control "Button" 1040 12 84 30 "Help" $header
 $chkDark = New-Control "CheckBox" 1140 16 80 24 "Dark" $header
@@ -1531,7 +1533,7 @@ $btnHelp.Add_Click({
         "WHAT THIS APP DOES",
         "Wraps an RPG Maker MV or MZ web export in a native Android app and builds an installable APK: fullscreen landscape, on-screen touch controls (d-pad, Z / X / SHIFT and an optional extra key button), Android back button opens the game menu, mobile GPU rendering fixes, your background art around the game window, and an optional itch-style frame. MV desktop exports (with the game inside a www folder) are detected automatically.",
         "",
-        "The touch controls start hidden behind a small round '+' button at the bottom center (like the Maldives player). Tapping it shows them and turns it into a minus; the player's choice is remembered between sessions.",
+        "The touch controls are shown by default. A small round button at the bottom center hides them (it turns into a '+') and brings them back; the player's choice is remembered between sessions.",
         "",
         "HOW TO USE",
         "1. Pick the game export folder (the one with index.html). The title fills in automatically; the icon and all options are remembered per game.",
@@ -1546,10 +1548,10 @@ $btnHelp.Add_Click({
         "Rebuilding the same game auto-increases the internal version number, so players can install the new APK over the old one without losing their saves.",
         "",
         "SIGNING",
-        "Android refuses unsigned apps, so a private signing key is created once in Documents\android-keys and reused for all your games. BACK THAT FOLDER UP - updates must be signed with the same key. No Google account is involved. These APKs are for itch.io and sideloading; publishing on Google Play would need a different pipeline (AAB, store listing, etc.).",
+        "Android refuses unsigned apps, so a private signing key is created once in Documents\android-keys and reused for all your games. BACK THAT FOLDER UP - updates must be signed with the same key. The same key is your Google Play upload key: every Play update must be signed with it too.",
         "",
         "GOOGLE PLAY BUILDS",
-        "Tick 'Google Play build' and fill in your IDs (Play IDs... button) to also produce an .aab for the Play Store with interstitial ads and a 'Remove Ads' purchase. You need: an AdMob account (per-game app + interstitial ad unit), and a Play Console app with a one-time product (default ID: remove_ads). Ads show where the game calls window.showAdBreak && window.showAdBreak(); - add that as a Script event command at natural break points in the RPG Maker editor. Each build then produces three files: the Play .aab (real ads), a TEST-ads .apk for your own phone (never tap real ads on your own device - AdMob bans accounts for it), and the clean itch .apk (no ads, no billing).",
+        "Tick 'Google Play build' and fill in your IDs (Play IDs... button) to also produce an .aab for the Play Store with interstitial ads and a 'Remove Ads' purchase. You need: an AdMob account (per-game app + interstitial ad unit), and a Play Console app with a one-time product (default ID: remove_ads). Ads show where the game calls window.showAdBreak && window.showAdBreak(); - add that as a Script event command at natural break points in the RPG Maker editor. Each build then produces three files: the Play .aab (real ads), a TEST-ads .apk for your own phone (never tap real ads on your own device - AdMob bans accounts for it), and the clean itch .apk (no ads, no billing). Ads builds also show Google's EU consent form, which only works once you publish a GDPR message for the app in AdMob (Privacy & messaging, tick the app, press Publish). The full step-by-step setup and phone-testing guide is in README.md (section 'Google Play builds').",
         "",
         "For short games where ads feel wrong, pick 'Support button only' in the Play IDs dialog instead: no ads and no AdMob account needed, just a 'Support the dev!' tip button on the title screen and in the pause menu. Create the in-app product in Play Console (default ID: support_dev); the app consumes each purchase so players can tip more than once. The itch .apk stays clean either way.",
         "",
@@ -1703,7 +1705,7 @@ $chkDark.Checked = $darkPref
 Apply-Theme $darkPref
 
 Write-Log "Ready. Pick your game export folder, icon and colors - the preview updates live. Then BUILD APK."
-Write-Log "Signing key: $KeysDir (created automatically; back it up). APKs are for itch.io/sideloading, not the Play Store."
+Write-Log "Signing key: $KeysDir (created automatically; back it up - it is also your Google Play upload key)."
 if (-not $AsciiPaths) {
     Write-Log "Note: your Windows user name contains non-English characters, which the Android build tools cannot handle. Build files, tools and the signing key are kept in $DataRoot instead."
 }
