@@ -46,6 +46,21 @@ Settings and version numbering are remembered per game: rebuilding after a
 game update automatically increments the internal version so players can
 install the new APK over the old one without losing saves.
 
+### Launcher icon style
+
+The dropdown next to the icon picks how the icon sits in Android's launcher
+shape. Phones crop it differently: Pixel-style launchers show only the middle
+two thirds, MIUI and some others show almost all of it.
+
+| Style | What it does | Good for |
+|---|---|---|
+| `framed` (default) | Icon at 66% on a plate of its corner color | Logos on a flat background |
+| `fill` | Icon covers the whole shape | Art with nothing important near the edges |
+| `blur` | Icon at 80% over a blurred, zoomed copy of itself | Art whose edges blend into the blur |
+| `fit` | Icon at 80% with a soft edge on a dark shade of its own border color | Character art: keeps everyone in frame, no ghost copies |
+
+Install a test build and check the icon on a real phone before you publish.
+
 If the export was made for a web portal, its ad SDK is removed from the app
 automatically (currently Game Monetize), so the portal's ads don't show
 inside the APK. Events that call `window.sdk.showBanner()` at ad breaks
@@ -80,7 +95,7 @@ Everything the GUI does is scriptable:
 powershell -ExecutionPolicy Bypass -File RMMZ-APK-Builder.ps1 -NoGui `
   -GameDir "C:\path\to\your\game" `
   -DevName "yourname" -VersionName "1.0" `
-  -IconPath "C:\path\to\icon.png" -BackgroundImage "C:\path\to\bg.png" `
+  -IconPath "C:\path\to\icon.png" -IconStyle fit -BackgroundImage "C:\path\to\bg.png" `
   -FrameColor "#bababa" -FrameOpacity 50 -FrameMargin 4 -VMargin 5 `
   -ButtonColor "#14507e" -ControlsOpacity 55 -ControlsSize 100 `
   -ExtraButton -ExtraKey "C" -OutputDir "C:\path\to\output"

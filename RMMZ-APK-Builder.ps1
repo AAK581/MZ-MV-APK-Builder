@@ -20,6 +20,7 @@ param(
     [string]$GameTitle = "",
     [string]$VersionName = "1.0",
     [string]$IconPath = "",
+    [ValidateSet("framed","fill","blur","fit")][string]$IconStyle = "framed",
     [string]$BackgroundImage = "",
     [string]$BackgroundColor = "#000000",
     [switch]$NoFrame,
@@ -382,13 +383,31 @@ function Draw-Cover([System.Drawing.Graphics]$g, [System.Drawing.Image]$img, [do
     $g.DrawImage($img, [float](($W - $dw) / 2), [float](($H - $dh) / 2), [float]$dw, [float]$dh)
 }
 
-function New-ImageAssets([string]$projDir, [string]$iconPath, [string]$bgImage, [System.Drawing.Color]$bgColor) {
+# Adaptive launcher icon styles (the layers are 108dp; Pixel-style launchers
+# show the middle 72dp, MIUI and some others show nearly the whole layer):
+#   framed - icon at 66% on a plate of its corner color (logos on a flat bg)
+#   fill   - icon covers the whole layer (full-bleed art; edges crop on Pixel)
+#   blur   - icon at 80% over a blurred, zoomed copy of itself (no plate)
+#   fit    - icon at 80% with a soft edge, on a flat dark shade of its own
+#            border color (full art stays visible, no ghost copies)
+function New-ImageAssets([string]$projDir, [string]$iconPath, [string]$bgImage, [System.Drawing.Color]$bgColor, [string]$iconStyle = "framed") {
     $assets = Join-Path $projDir "assets"
     New-Item -ItemType Directory -Force $assets | Out-Null
     $icon = [System.Drawing.Image]::FromFile($iconPath)
     $iconBmp = New-Object System.Drawing.Bitmap($icon)
     $corner = $iconBmp.GetPixel(2, 2)
     if ($corner.A -lt 255) { $corner = [System.Drawing.Color]::Black }
+    if ($iconStyle -eq "fit") {
+        # average of the outer 4% of the icon, darkened to 60%
+        $bw = [Math]::Max(1, [int]($iconBmp.Width * 0.04)); $sr = 0; $sg = 0; $sb = 0; $n = 0
+        for ($y = 0; $y -lt $iconBmp.Height; $y += 4) {
+            for ($x = 0; $x -lt $iconBmp.Width; $x += 4) {
+                if ($x -ge $bw -and $x -lt $iconBmp.Width - $bw -and $y -ge $bw -and $y -lt $iconBmp.Height - $bw) { continue }
+                $p = $iconBmp.GetPixel($x, $y); $sr += $p.R; $sg += $p.G; $sb += $p.B; $n++
+            }
+        }
+        $corner = [System.Drawing.Color]::FromArgb([int]($sr / $n * 0.6), [int]($sg / $n * 0.6), [int]($sb / $n * 0.6))
+    }
 
     function New-Canvas([int]$w, [int]$h, [System.Drawing.Color]$c) {
         $bmp = New-Object System.Drawing.Bitmap($w, $h)
@@ -403,11 +422,62 @@ function New-ImageAssets([string]$projDir, [string]$iconPath, [string]$bgImage, 
     Draw-Cover $g $icon 1024 1024; $g.Dispose()
     $bmp.Save("$assets\icon-only.png", [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
 
+    # blurred, zoomed copy of the icon (System.Drawing has no blur: shrink to
+    # 48 px and stretch back up with bicubic smoothing)
+    function Draw-Blurred([System.Drawing.Graphics]$g) {
+        $small = New-Object System.Drawing.Bitmap(48, 48)
+        $gs = [System.Drawing.Graphics]::FromImage($small)
+        $gs.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        Draw-Cover $gs $icon 48 48; $gs.Dispose()
+        $attr = New-Object System.Drawing.Imaging.ImageAttributes
+        $attr.SetWrapMode([System.Drawing.Drawing2D.WrapMode]::TileFlipXY)
+        $g.DrawImage($small, (New-Object System.Drawing.Rectangle(0, 0, 1024, 1024)), 0, 0, 48, 48, [System.Drawing.GraphicsUnit]::Pixel, $attr)
+        $attr.Dispose(); $small.Dispose()
+    }
+
     $c = New-Canvas 1024 1024 $corner; $bmp = $c[0]; $g = $c[1]
-    $g.DrawImage($icon, 176, 176, 672, 672); $g.Dispose()
+    switch ($iconStyle) {
+        "fill" { Draw-Cover $g $icon 1024 1024 }
+        "blur" {
+            # icon at 80% with a 64 px feathered edge: eight stacked passes at
+            # 25% opacity, each clipped 8 px further in, then an opaque core
+            Draw-Blurred $g
+            $cm = New-Object System.Drawing.Imaging.ColorMatrix
+            $cm.Matrix33 = 0.25
+            $attr = New-Object System.Drawing.Imaging.ImageAttributes
+            $attr.SetColorMatrix($cm)
+            $dst = New-Object System.Drawing.Rectangle(102, 102, 820, 820)
+            for ($k = 0; $k -lt 8; $k++) {
+                $g.SetClip((New-Object System.Drawing.Rectangle((102 + 8 * $k), (102 + 8 * $k), (820 - 16 * $k), (820 - 16 * $k))))
+                $g.DrawImage($icon, $dst, 0, 0, $icon.Width, $icon.Height, [System.Drawing.GraphicsUnit]::Pixel, $attr)
+            }
+            $g.SetClip((New-Object System.Drawing.Rectangle(166, 166, 692, 692)))
+            $g.DrawImage($icon, 102, 102, 820, 820)
+            $g.ResetClip(); $attr.Dispose()
+        }
+        "fit" {
+            # icon at 80% with a 24 px feathered edge (same stacking as blur)
+            $cm = New-Object System.Drawing.Imaging.ColorMatrix
+            $cm.Matrix33 = 0.25
+            $attr = New-Object System.Drawing.Imaging.ImageAttributes
+            $attr.SetColorMatrix($cm)
+            $dst = New-Object System.Drawing.Rectangle(102, 102, 820, 820)
+            for ($k = 0; $k -lt 8; $k++) {
+                $g.SetClip((New-Object System.Drawing.Rectangle((102 + 3 * $k), (102 + 3 * $k), (820 - 6 * $k), (820 - 6 * $k))))
+                $g.DrawImage($icon, $dst, 0, 0, $icon.Width, $icon.Height, [System.Drawing.GraphicsUnit]::Pixel, $attr)
+            }
+            $g.SetClip((New-Object System.Drawing.Rectangle(126, 126, 772, 772)))
+            $g.DrawImage($icon, 102, 102, 820, 820)
+            $g.ResetClip(); $attr.Dispose()
+        }
+        default { $g.DrawImage($icon, 176, 176, 672, 672) }
+    }
+    $g.Dispose()
     $bmp.Save("$assets\icon-foreground.png", [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
 
     $c = New-Canvas 1024 1024 $corner; $bmp = $c[0]; $g = $c[1]
+    if ($iconStyle -eq "fill") { Draw-Cover $g $icon 1024 1024 }
+    elseif ($iconStyle -eq "blur") { Draw-Blurred $g }
     $g.Dispose(); $bmp.Save("$assets\icon-background.png", [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
 
     $c = New-Canvas 2732 2732 $bgColor; $bmp = $c[0]; $g = $c[1]
@@ -684,7 +754,7 @@ if (keystorePropertiesFile.exists()) {
     # --- icons / splash ---
     Write-Log "== Generating icons and splash screens"
     Set-Progress -text "Generating icons and splash screens"
-    New-ImageAssets $projDir $cfg.IconPath $cfg.BackgroundImage (Parse-HexColor $cfg.BackgroundColor "#000000")
+    New-ImageAssets $projDir $cfg.IconPath $cfg.BackgroundImage (Parse-HexColor $cfg.BackgroundColor "#000000") $(if ($cfg.IconStyle) { $cfg.IconStyle } else { "framed" })
     Run-Cmd "Rendering Android image densities" $projDir "npx.cmd" @("--yes", "@capacitor/assets", "generate", "--android")
 
     # --- sync + build ---
@@ -721,7 +791,7 @@ if ($NoGui) {
     $GameDir = Resolve-GameDir $GameDir
     $cfg = @{
         GameDir = $GameDir; DevName = $DevName; GameTitle = $GameTitle
-        VersionName = $VersionName; IconPath = $IconPath
+        VersionName = $VersionName; IconPath = $IconPath; IconStyle = $IconStyle
         BackgroundImage = $BackgroundImage; BackgroundColor = $BackgroundColor
         FrameEnabled = (-not $NoFrame); FrameColor = $FrameColor
         FrameOpacity = $FrameOpacity; FrameMargin = $FrameMargin
@@ -815,8 +885,13 @@ $txtDev = New-Control "TextBox" 140 89 150 22 $DevName $gbGame
 $null = New-Control "Label" 306 92 52 18 "Version" $gbGame
 $txtVer = New-Control "TextBox" 360 89 70 22 "1.0" $gbGame
 $null = New-Control "Label" 12 124 124 18 "Icon image" $gbGame
-$txtIcon = New-Control "TextBox" 140 121 330 22 "" $gbGame
-$btnIcon = New-Control "Button" 476 120 36 24 "..." $gbGame
+$txtIcon = New-Control "TextBox" 140 121 250 22 "" $gbGame
+$btnIcon = New-Control "Button" 396 120 36 24 "..." $gbGame
+# launcher icon style, see New-ImageAssets
+$cmbIconStyle = New-Control "ComboBox" 438 121 74 22 "" $gbGame
+$cmbIconStyle.DropDownStyle = "DropDownList"
+[void]$cmbIconStyle.Items.AddRange(@("framed", "fill", "blur", "fit"))
+$cmbIconStyle.SelectedItem = "framed"
 $null = New-Control "Label" 12 156 124 18 "Output folder" $gbGame
 $txtOut = New-Control "TextBox" 140 153 330 22 (Join-Path $ToolDir "output") $gbGame
 $btnOut = New-Control "Button" 476 152 36 24 "..." $gbGame
@@ -1088,6 +1163,7 @@ $btnGame.Add_Click({
                 $s = Get-Content $state -Raw | ConvertFrom-Json
                 $txtDev.Text = $s.DevName; $txtVer.Text = $s.VersionName
                 $txtIcon.Text = $s.IconPath; $txtBgImg.Text = [string]$s.BackgroundImage
+                $cmbIconStyle.SelectedItem = $(if ($s.IconStyle) { [string]$s.IconStyle } else { "framed" })
                 $txtBgCol.Text = $s.BackgroundColor
                 $chkFrame.Checked = [bool]$s.FrameEnabled
                 $txtFrCol.Text = $s.FrameColor; $numFrOp.Value = [int]$s.FrameOpacity
@@ -1249,6 +1325,7 @@ $btnBuild.Add_Click({
         $cfg = @{
             GameDir = $txtGame.Text; DevName = $txtDev.Text; GameTitle = $txtTitle.Text
             VersionName = $txtVer.Text; IconPath = $txtIcon.Text
+            IconStyle = [string]$cmbIconStyle.SelectedItem
             BackgroundImage = $txtBgImg.Text; BackgroundColor = $txtBgCol.Text
             FrameEnabled = $chkFrame.Checked; FrameColor = $txtFrCol.Text
             FrameOpacity = [int]$numFrOp.Value; FrameMargin = [double]$numFrMg.Value
