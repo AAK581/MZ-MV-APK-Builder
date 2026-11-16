@@ -56,10 +56,16 @@ two thirds, MIUI and some others show almost all of it.
 |---|---|---|
 | `framed` (default) | Icon at 66% on a plate of its corner color | Logos on a flat background |
 | `fill` | Icon covers the whole shape | Art with nothing important near the edges |
-| `blur` | Icon at 80% over a blurred, zoomed copy of itself | Art whose edges blend into the blur |
-| `fit` | Icon at 80% with a soft edge on a dark shade of its own border color | Character art: keeps everyone in frame, no ghost copies |
+| `blur` | Icon (80% by default) over a blurred, zoomed copy of itself | Art whose edges blend into the blur |
+| `fit` | Icon (80% by default) with a soft edge on a dark shade of its own border color | Character art: keeps everyone in frame, no ghost copies |
 
-Install a test build and check the icon on a real phone before you publish.
+The **%** box sets the art size for `blur` and `fit` (default 80). Wide
+character art needs about 64 to stay inside Pixel and Samsung icons.
+
+**Preview** next to the dropdown shows your icon in every style, cropped the
+way Pixel, Samsung and Xiaomi launchers crop it. Click a column to pick that
+style; the art size can be changed there too. Install a test build and
+check the icon on a real phone before you publish.
 
 If the export was made for a web portal, its ad SDK is removed from the app
 automatically (currently Game Monetize), so the portal's ads don't show
@@ -95,7 +101,7 @@ Everything the GUI does is scriptable:
 powershell -ExecutionPolicy Bypass -File RMMZ-APK-Builder.ps1 -NoGui `
   -GameDir "C:\path\to\your\game" `
   -DevName "yourname" -VersionName "1.0" `
-  -IconPath "C:\path\to\icon.png" -IconStyle fit -BackgroundImage "C:\path\to\bg.png" `
+  -IconPath "C:\path\to\icon.png" -IconStyle fit -IconScale 64 -BackgroundImage "C:\path\to\bg.png" `
   -FrameColor "#bababa" -FrameOpacity 50 -FrameMargin 4 -VMargin 5 `
   -ButtonColor "#14507e" -ControlsOpacity 55 -ControlsSize 100 `
   -ExtraButton -ExtraKey "C" -OutputDir "C:\path\to\output"
